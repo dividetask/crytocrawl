@@ -1,0 +1,11 @@
+# Local databases / dumps
+*.db
+*.db-wal
+*.db-shm
+*.tsv
+*.tsv.gz
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
