@@ -1,24 +1,17 @@
-"""Bulk ingest of the Blockchair address dump.
-
-Blockchair publishes a daily gzip-compressed TSV of every address with a
-non-zero balance:
+"""Fill in *current* balances from the Blockchair addresses dump.
 
     https://gz.blockchair.com/bitcoin/addresses/blockchair_bitcoin_addresses_latest.tsv.gz
 
-Format (tab-separated, with a header row)::
+Format (tab-separated, header row), balance in **satoshis**::
 
     address	balance
     1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa	6857585654
-    ...
 
-``balance`` is in **satoshis**. This module streams the file (so memory stays
-flat even on a multi-GB dump) and upserts rows into SQLite in batches.
-
-The dump only lists addresses that *currently* hold a balance. We never delete
-rows, so addresses that previously held a balance remain in the DB (matching
-the "every address that ever held a balance" requirement). Use
-``zero_missing=True`` if you instead want addresses absent from a fresh dump to
-be set to a zero balance.
+This dump lists only addresses with a *currently* non-zero balance. The full
+"ever held a balance" set comes from :mod:`crytocrawl.outputs`; this step just
+writes the current balance onto those rows. By default we first reset every
+stored balance to 0, so addresses that have since been spent out correctly read
+0 even on a re-run (the dump won't mention them).
 """
 
 from __future__ import annotations
@@ -35,8 +28,7 @@ LATEST_URL = (
     "https://gz.blockchair.com/bitcoin/addresses/"
     "blockchair_bitcoin_addresses_latest.tsv.gz"
 )
-
-_USER_AGENT = "crytocrawl/0.1 (+https://github.com/dividetask/crytocrawl)"
+_USER_AGENT = "crytocrawl/0.2 (+https://github.com/dividetask/crytocrawl)"
 BATCH_SIZE = 50_000
 
 
@@ -45,7 +37,6 @@ def _utcnow() -> str:
 
 
 def _open_source(file: Optional[str], url: Optional[str]) -> Tuple[IO[bytes], str]:
-    """Return a binary stream of the (still gzipped) dump and a source label."""
     if file:
         return open(file, "rb"), f"file:{file}"
     target = url or LATEST_URL
@@ -55,10 +46,7 @@ def _open_source(file: Optional[str], url: Optional[str]) -> Tuple[IO[bytes], st
 
 
 def parse_rows(text_stream: Iterable[str]) -> Iterator[Tuple[str, int]]:
-    """Yield ``(address, balance_sat)`` from the decoded TSV lines.
-
-    Skips a leading header row if present and ignores blank/malformed lines.
-    """
+    """Yield ``(address, balance_sat)`` from decoded TSV lines, skipping header."""
     first = True
     for line in text_stream:
         line = line.rstrip("\n")
@@ -70,7 +58,6 @@ def parse_rows(text_stream: Iterable[str]) -> Iterator[Tuple[str, int]]:
         addr, bal = parts[0], parts[1]
         if first:
             first = False
-            # Header row uses the literal column name.
             if bal.strip().lower() == "balance" or not bal.strip().isdigit():
                 continue
         try:
@@ -79,7 +66,7 @@ def parse_rows(text_stream: Iterable[str]) -> Iterator[Tuple[str, int]]:
             continue
 
 
-def _upsert_batch(conn: sqlite3.Connection, batch: list[Tuple[str, int]], now: str) -> None:
+def _upsert_batch(conn: sqlite3.Connection, batch, now: str) -> None:
     conn.executemany(
         "INSERT INTO addresses(address, balance_sat, balance_updated_at) "
         "VALUES(?, ?, ?) "
@@ -90,20 +77,20 @@ def _upsert_batch(conn: sqlite3.Connection, batch: list[Tuple[str, int]], now: s
     )
 
 
-def ingest_dump(
+def ingest_balances(
     conn: sqlite3.Connection,
     *,
     file: Optional[str] = None,
     url: Optional[str] = None,
     batch_size: int = BATCH_SIZE,
-    zero_missing: bool = False,
+    zero_first: bool = True,
     progress: bool = True,
 ) -> int:
-    """Load a Blockchair address dump into ``conn``.
+    """Apply current balances from a Blockchair addresses dump.
 
-    Provide ``file`` for a locally-downloaded ``.tsv.gz`` (or plain ``.tsv``),
-    or ``url`` to fetch (defaults to Blockchair's "latest"). Returns the number
-    of address rows processed.
+    With ``zero_first`` (default) all stored balances are reset to 0 before the
+    dump is applied, guaranteeing the table reflects *current* balances exactly.
+    Returns the number of funded address rows written.
     """
     from . import db as _dbmod
 
@@ -111,21 +98,19 @@ def ingest_dump(
     now = _utcnow()
     processed = 0
 
-    # Transparently handle both gzipped and already-decompressed inputs.
     try:
         peeked = raw.peek(2) if hasattr(raw, "peek") else b""
     except Exception:
         peeked = b""
     is_gzip = source.startswith("url:") or (file or "").endswith(".gz") or peeked[:2] == b"\x1f\x8b"
-
     binary = gzip.GzipFile(fileobj=raw) if is_gzip else raw
     text = io.TextIOWrapper(binary, encoding="utf-8", errors="replace")
 
     try:
-        if zero_missing:
+        if zero_first:
             conn.execute("UPDATE addresses SET balance_sat = 0, balance_updated_at = ?", (now,))
 
-        batch: list[Tuple[str, int]] = []
+        batch = []
         for addr, bal in parse_rows(text):
             batch.append((addr, bal))
             if len(batch) >= batch_size:
@@ -133,14 +118,14 @@ def ingest_dump(
                 processed += len(batch)
                 batch.clear()
                 if progress:
-                    print(f"\r  ingested {processed:,} addresses...", end="", file=sys.stderr)
+                    print(f"\r  balances: {processed:,} funded addresses...", end="", file=sys.stderr)
         if batch:
             _upsert_batch(conn, batch, now)
             processed += len(batch)
 
-        _dbmod.set_meta(conn, "dump_source", source)
-        _dbmod.set_meta(conn, "last_ingest_at", now)
-        _dbmod.set_meta(conn, "dump_date", now[:10])
+        _dbmod.set_meta(conn, "balances_dump_source", source)
+        _dbmod.set_meta(conn, "balances_dump_date", now[:10])
+        _dbmod.set_meta(conn, "last_balances_ingest_at", now)
         conn.commit()
     finally:
         text.close()
@@ -151,5 +136,5 @@ def ingest_dump(
                 pass
 
     if progress:
-        print(f"\r  ingested {processed:,} addresses.        ", file=sys.stderr)
+        print(f"\r  balances: {processed:,} funded addresses.        ", file=sys.stderr)
     return processed

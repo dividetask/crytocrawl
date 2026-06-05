@@ -1,95 +1,110 @@
 # crytocrawl
 
-Download, store, and query **Bitcoin address balances and transaction counts**
-locally in a single SQLite file. Pure Python standard library — no pip installs
-required to run it.
+A local, queryable store of **every Bitcoin address that has ever held a
+balance**, with each address's **current balance**. Pure Python standard
+library — nothing to `pip install` to run it; data lives in one SQLite file.
 
-## The important caveat (read this first)
+## What "ever held a balance" means and how this gets it
 
-There is **no API that lists every Bitcoin address**, and there are ~50M+
-addresses with a non-zero balance (over a billion ever used). You cannot crawl
-them one-by-one — it would take years and get you rate-limited. So getting
-*all* addresses works in two stages:
+An address has held a balance if and only if it was ever the **recipient of a
+transaction output** carrying value. That fact only exists in the full history
+of the chain, so the dataset is built in two phases from
+[Blockchair's bulk dumps](https://gz.blockchair.com/bitcoin/):
 
-1. **Balances for all addresses** come from a bulk **Blockchair dump** — one
-   gzipped TSV of `address \t balance_in_satoshis`, refreshed daily. This is
-   the only practical way to get the whole set.
-2. **Transaction counts** are *not* in that dump. The only ways to get tx
-   counts are (a) per-address API calls (fine for the addresses you care about,
-   infeasible for all of them) or (b) running your own full Bitcoin node. This
-   tool does (a) on demand via `enrich`. For *complete* tx counts across every
-   address you'd need a full node — see "Going further" below.
+1. **`ingest-outputs`** — aggregate the distinct `recipient` of every output
+   (value > 0) across **all** daily *output* dumps since 2009. This is the
+   complete "ever held a balance" set. Each address is stored with balance 0.
+2. **`ingest-balances`** — apply the *addresses* dump (current non-zero
+   balances) on top. Addresses that received coins in the past but have since
+   spent them all stay in the table with a current balance of **0**.
 
-Balances are stored in **satoshis as integers** (exact) and shown as BTC floats
-at query time, so no precision is lost.
+> The current-balance-only addresses dump alone is **not** enough — it omits
+> every spent-out address. The output-history aggregation is what makes the set
+> complete.
 
-## Install
+Balances are stored as integer **satoshis** (exact) and shown as BTC floats at
+query time, so no precision is lost. Presence of a row *is* the "ever held a
+balance" fact.
 
-Nothing to install. Requires Python 3.9+. Run as a module:
+## Requirements & expectations
+
+- Python 3.9+. No third-party packages.
+- The full output-dump history is **hundreds of GB compressed** (one file per
+  day since 2009). Downloading is bandwidth/time heavy; aggregation is a
+  multi-hour, single pass. The resulting SQLite DB is in the low tens of GB and
+  holds **hundreds of millions** of addresses.
+- Blockchair may require an API key for the full historical archive. Set
+  `BLOCKCHAIR_API_KEY` and it's appended to download requests automatically.
+
+## End-to-end
 
 ```bash
-python3 -m crytocrawl --help
-```
+# 0. (optional) pick where the DB lives
+export CRYTOCRAWL_DB=bitcoin.db
 
-The database path defaults to `bitcoin.db` and can be overridden with `--db` or
-the `CRYTOCRAWL_DB` environment variable.
+# 1. Download the full output-dump history (resumable; re-run to continue).
+python3 -m crytocrawl download --dataset outputs --dir dumps/outputs
+#    ...and the current-balance dump:
+python3 -m crytocrawl download --dataset addresses --dir dumps/addresses
 
-## Quick start
+# 2. Build the 'ever held a balance' set from every output dump:
+python3 -m crytocrawl ingest-outputs dumps/outputs
 
-```bash
-# 1. Download the Blockchair address dump (~ a few GB; do this with curl/wget):
-curl -O https://gz.blockchair.com/bitcoin/addresses/blockchair_bitcoin_addresses_latest.tsv.gz
+# 3. Apply current balances:
+python3 -m crytocrawl ingest-balances --file dumps/addresses/blockchair_bitcoin_addresses_latest.tsv.gz
 
-# 2. Load every address + balance into SQLite (streams the file, flat memory):
-python3 -m crytocrawl ingest --file blockchair_bitcoin_addresses_latest.tsv.gz
-#    ...or let it download for you:
-python3 -m crytocrawl ingest          # fetches Blockchair "latest" itself
-
-# 3. Query from the terminal:
+# 4. Query from the terminal:
 python3 -m crytocrawl stats
+python3 -m crytocrawl exists 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa   # -> yes/no (exit 0/1)
+python3 -m crytocrawl get    1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa   # -> current balance
 python3 -m crytocrawl top -n 25
-python3 -m crytocrawl get 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa
 python3 -m crytocrawl search bc1q --limit 50
-
-# 4. Fill in transaction counts for the addresses you care about:
-python3 -m crytocrawl enrich 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa
-python3 -m crytocrawl enrich --pending 500    # enrich 500 richest un-enriched
 ```
 
-Add `--json` to any query command for machine-readable output.
+Both ingest steps are **resumable/idempotent**: processed output files are
+recorded, so you can stop and restart `ingest-outputs`; `ingest-balances`
+resets balances first so re-running with a fresh dump always yields exact
+*current* balances. Add `--json` to any query for machine-readable output.
+
+You can also point ingest at files you've already downloaded by any means, or
+let `download` fetch them. `ingest-outputs` accepts files, globs, or directories.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `init` | Create the database file/schema |
-| `ingest [--file F \| --url U] [--zero-missing]` | Load a Blockchair dump (balances for all addresses) |
-| `enrich [ADDR...] [--pending N] [--sleep S]` | Fetch tx_count + fresh balance via mempool.space |
-| `get ADDR` | Look up one address |
-| `top [-n N]` | Richest addresses by balance |
+| `download --dataset {outputs,addresses} --dir D [--since YYYYMMDD] [--until YYYYMMDD]` | Fetch dumps (resumable) |
+| `ingest-outputs PATHS...` | Aggregate output dumps → every address that ever held a balance |
+| `ingest-balances [--file F \| --url U] [--no-zero-first]` | Apply current balances |
+| `exists ADDR` | Did this address ever hold a balance? (`yes`/`no`, exit 0/1) |
+| `get ADDR` | Show an address's current balance |
+| `top [-n N]` | Richest addresses by current balance |
 | `search PREFIX [--limit N]` | Addresses by prefix |
-| `stats` | Totals, supply held, enrichment progress, dump date |
+| `stats` | Totals, # ever-held, # currently funded, dump dates |
 
-`ingest` keeps historical rows by default (so the DB reflects "every address
-that ever held a balance"). Pass `--zero-missing` if you instead want addresses
-absent from a fresh dump to be reset to a zero balance.
+## Query directly with the `sqlite3` CLI
 
-## Querying directly with the `sqlite3` CLI
-
-The store is a plain SQLite file, so you can query it without Python too:
+It's a plain SQLite file, so you don't even need Python to query it:
 
 ```bash
-sqlite3 bitcoin.db "SELECT address, balance_sat/1e8 AS btc, tx_count
-                    FROM addresses ORDER BY balance_sat DESC LIMIT 10;"
+# Did an address ever hold a balance?
+sqlite3 bitcoin.db "SELECT EXISTS(SELECT 1 FROM addresses WHERE address='1A1z...');"
+# Current balance (BTC):
+sqlite3 bitcoin.db "SELECT balance_sat/1e8 FROM addresses WHERE address='1A1z...';"
+# Richest 10:
+sqlite3 bitcoin.db "SELECT address, balance_sat/1e8 AS btc FROM addresses
+                    ORDER BY balance_sat DESC LIMIT 10;"
 ```
 
-## Using it as a library
+## As a library
 
 ```python
-from crytocrawl import open_db, get_address, top_addresses, stats
+from crytocrawl import open_db, ever_held, get_address, top_addresses, stats
 
 conn = open_db("bitcoin.db")
-print(get_address(conn, "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"))
+print(ever_held(conn, "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"))   # True/False
+print(get_address(conn, "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa")) # {'balance_btc': ...}
 print(top_addresses(conn, 10))
 print(stats(conn))
 ```
@@ -98,27 +113,13 @@ print(stats(conn))
 
 ```
 addresses(
-  address             TEXT PRIMARY KEY,
-  balance_sat         INTEGER NOT NULL,   -- satoshis (exact)
-  tx_count            INTEGER,            -- NULL until enriched
-  balance_updated_at  TEXT,               -- ISO-8601 UTC
-  tx_count_updated_at TEXT
+  address             TEXT PRIMARY KEY,   -- exists  => ever held a balance
+  balance_sat         INTEGER NOT NULL,   -- current balance in satoshis (0 = spent out)
+  balance_updated_at  TEXT                -- ISO-8601 UTC
 )
-meta(key TEXT PRIMARY KEY, value TEXT)    -- dump_date, source, last_ingest_at
+ingested_files(name TEXT PRIMARY KEY, rows INTEGER, ingested_at TEXT)  -- resume bookkeeping
+meta(key TEXT PRIMARY KEY, value TEXT)    -- dump dates, progress
 ```
-
-## Going further: complete tx counts for *every* address
-
-That requires your own data, not a public API. Run Bitcoin Core fully synced
-with `-txindex=1`, then:
-
-- `bitcoin-cli dumptxoutset utxos.dat` gives the full UTXO set → balances per
-  address (authoritative).
-- Scanning every block (`getblock ... 2`) and tallying inputs/outputs per
-  address gives exact tx counts.
-
-The SQLite schema and query layer here are reusable for that pipeline; only the
-ingest source changes. Open an issue if you want this path scaffolded.
 
 ## Tests
 
@@ -126,4 +127,5 @@ ingest source changes. Open an issue if you want this path scaffolded.
 python3 -m pytest -q
 ```
 
-Tests are fully offline (the API is mocked).
+Fully offline — output/address parsing, aggregation, resume, balance application
+and the downloader's URL/index logic are all covered without network access.

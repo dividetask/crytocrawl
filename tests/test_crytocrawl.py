@@ -1,4 +1,4 @@
-"""Tests for crytocrawl. No network access required (the API is mocked)."""
+"""Tests for crytocrawl. Fully offline (no network)."""
 
 import gzip
 import io
@@ -9,13 +9,24 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from crytocrawl import db, enrich, ingest, query  # noqa: E402
+from crytocrawl import db, download, ingest, outputs, query  # noqa: E402
 
-SAMPLE = (
+# An output dump: columns include recipient + value (satoshis).
+OUTPUTS = (
+    "block_id\ttransaction_hash\tindex\ttime\tvalue\trecipient\ttype\n"
+    "1\taa\t0\t2009\t5000000000\tAddrCoinbase\tpubkey\n"
+    "100\tbb\t0\t2010\t300000000\tAddrSpent\tpubkeyhash\n"      # later spent to 0
+    "100\tbb\t1\t2010\t100000000\tAddrFunded\tpubkeyhash\n"
+    "150\tcc\t0\t2011\t0\tAddrOpReturn\tnulldata\n"            # value 0 -> skipped
+    "150\tcc\t1\t2011\t250\t\tnonstandard\n"                   # empty recipient -> skipped
+    "200\tdd\t0\t2012\t300000000\tAddrSpent\tpubkeyhash\n"     # duplicate recipient
+)
+
+# An addresses dump (current balances). AddrSpent is absent => current balance 0.
+BALANCES = (
     "address\tbalance\n"
-    "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa\t6857585654\n"
-    "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4\t100000000\n"
-    "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy\t250\n"
+    "AddrCoinbase\t5000000000\n"
+    "AddrFunded\t100000000\n"
 )
 
 
@@ -26,153 +37,140 @@ def conn():
     c.close()
 
 
-def _gz_bytes(text: str) -> bytes:
-    buf = io.BytesIO()
-    with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
-        gz.write(text.encode())
-    return buf.getvalue()
+def _write(path, text, gz=False):
+    if gz:
+        with gzip.open(path, "wt") as fh:
+            fh.write(text)
+    else:
+        path.write_text(text)
+    return str(path)
 
 
-def test_parse_rows_skips_header_and_blank():
-    rows = list(ingest.parse_rows(SAMPLE.splitlines()))
-    assert rows == [
-        ("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", 6857585654),
-        ("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4", 100000000),
-        ("3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy", 250),
+# ---- outputs aggregation (the 'ever held a balance' set) --------------------
+
+def test_iter_recipients_filters_zero_and_empty():
+    recs = list(outputs.iter_recipients(OUTPUTS.splitlines()))
+    assert recs == ["AddrCoinbase", "AddrSpent", "AddrFunded", "AddrSpent"]
+
+
+def test_ingest_outputs_builds_ever_held_set(tmp_path, conn):
+    f = _write(tmp_path / "blockchair_bitcoin_outputs_20120101.tsv", OUTPUTS)
+    outputs.ingest_outputs(conn, [f], progress=False)
+    addrs = {r["address"] for r in query.search_addresses(conn, "Addr", 100)}
+    assert addrs == {"AddrCoinbase", "AddrSpent", "AddrFunded"}
+    assert query.ever_held(conn, "AddrSpent") is True
+    assert query.ever_held(conn, "NeverSeen") is False
+    # No balances applied yet -> everything reads 0.
+    assert query.get_address(conn, "AddrSpent")["balance_sat"] == 0
+
+
+def test_ingest_outputs_gz_and_resume(tmp_path, conn):
+    f = _write(tmp_path / "blockchair_bitcoin_outputs_20120101.tsv.gz", OUTPUTS, gz=True)
+    scanned = outputs.ingest_output_file(conn, f, progress=False)
+    assert scanned == 4  # 4 kept recipients (2 skipped)
+    # Re-running the same file is a no-op (recorded in ingested_files).
+    again = outputs.ingest_output_file(conn, f, progress=False)
+    assert again == 0
+    assert db.get_meta(conn, "outputs_through") == "20120101"
+
+
+def test_discover_files_sorted_by_date(tmp_path):
+    a = _write(tmp_path / "blockchair_bitcoin_outputs_20120301.tsv", "x")
+    b = _write(tmp_path / "blockchair_bitcoin_outputs_20120101.tsv", "x")
+    found = outputs.discover_files([str(tmp_path)])
+    assert [os.path.basename(p) for p in found] == [
+        "blockchair_bitcoin_outputs_20120101.tsv",
+        "blockchair_bitcoin_outputs_20120301.tsv",
     ]
 
 
-def test_ingest_from_plain_file(tmp_path, conn):
-    f = tmp_path / "dump.tsv"
-    f.write_text(SAMPLE)
-    n = ingest.ingest_dump(conn, file=str(f), progress=False)
-    assert n == 3
-    assert query.count_addresses(conn) == 3
-    row = query.get_address(conn, "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4")
-    assert row["balance_sat"] == 100000000
-    assert row["balance_btc"] == 1.0
-    assert row["tx_count"] is None  # not enriched yet
+def test_outputs_header_without_value_keeps_all(conn):
+    text = "block_id\trecipient\nA\tFoo\nB\tBar\n"
+    recs = list(outputs.iter_recipients(text.splitlines()))
+    assert recs == ["Foo", "Bar"]
 
 
-def test_ingest_from_gz_file(tmp_path, conn):
-    f = tmp_path / "dump.tsv.gz"
-    f.write_bytes(_gz_bytes(SAMPLE))
-    n = ingest.ingest_dump(conn, file=str(f), progress=False)
-    assert n == 3
-    assert query.get_address(conn, "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy")["balance_sat"] == 250
+def test_outputs_missing_recipient_column_errors():
+    with pytest.raises(ValueError):
+        list(outputs.iter_recipients(["block_id\tvalue\n", "1\t2\n"]))
 
 
-def test_ingest_is_idempotent_and_updates(tmp_path, conn):
-    f = tmp_path / "dump.tsv"
-    f.write_text(SAMPLE)
-    ingest.ingest_dump(conn, file=str(f), progress=False)
-    # New dump: same address, changed balance.
-    f.write_text("address\tbalance\n1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa\t42\n")
-    ingest.ingest_dump(conn, file=str(f), progress=False)
-    assert query.count_addresses(conn) == 3  # old rows preserved
-    assert query.get_address(conn, "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa")["balance_sat"] == 42
+# ---- current balances -------------------------------------------------------
+
+def test_ingest_balances_sets_current_and_zeroes_spent(tmp_path, conn):
+    of = _write(tmp_path / "blockchair_bitcoin_outputs_20120101.tsv", OUTPUTS)
+    outputs.ingest_outputs(conn, [of], progress=False)
+    bf = _write(tmp_path / "blockchair_bitcoin_addresses_latest.tsv", BALANCES)
+    n = ingest.ingest_balances(conn, file=bf, progress=False)
+    assert n == 2
+    assert query.get_address(conn, "AddrFunded")["balance_sat"] == 100000000
+    assert query.get_address(conn, "AddrFunded")["balance_btc"] == 1.0
+    # AddrSpent held a balance once, now spent out -> present but 0.
+    assert query.ever_held(conn, "AddrSpent") is True
+    assert query.get_address(conn, "AddrSpent")["balance_sat"] == 0
 
 
-def test_zero_missing(tmp_path, conn):
-    f = tmp_path / "dump.tsv"
-    f.write_text(SAMPLE)
-    ingest.ingest_dump(conn, file=str(f), progress=False)
-    f.write_text("address\tbalance\n3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy\t999\n")
-    ingest.ingest_dump(conn, file=str(f), progress=False, zero_missing=True)
-    assert query.get_address(conn, "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa")["balance_sat"] == 0
-    assert query.get_address(conn, "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy")["balance_sat"] == 999
+def test_ingest_balances_zero_first_on_rerun(tmp_path, conn):
+    of = _write(tmp_path / "blockchair_bitcoin_outputs_20120101.tsv", OUTPUTS)
+    outputs.ingest_outputs(conn, [of], progress=False)
+    bf = _write(tmp_path / "b1.tsv", BALANCES)
+    ingest.ingest_balances(conn, file=bf, progress=False)
+    # New dump where AddrFunded is now spent out (absent); AddrCoinbase changed.
+    bf2 = _write(tmp_path / "b2.tsv", "address\tbalance\nAddrCoinbase\t42\n")
+    ingest.ingest_balances(conn, file=bf2, progress=False)
+    assert query.get_address(conn, "AddrCoinbase")["balance_sat"] == 42
+    assert query.get_address(conn, "AddrFunded")["balance_sat"] == 0  # reset by zero_first
 
+
+def test_balances_gz(tmp_path, conn):
+    bf = _write(tmp_path / "addr.tsv.gz", BALANCES, gz=True)
+    ingest.ingest_balances(conn, file=bf, progress=False)
+    assert query.get_address(conn, "AddrCoinbase")["balance_sat"] == 5000000000
+
+
+# ---- queries / stats --------------------------------------------------------
 
 def test_top_and_stats(tmp_path, conn):
-    f = tmp_path / "dump.tsv"
-    f.write_text(SAMPLE)
-    ingest.ingest_dump(conn, file=str(f), progress=False)
+    of = _write(tmp_path / "blockchair_bitcoin_outputs_20120101.tsv", OUTPUTS)
+    outputs.ingest_outputs(conn, [of], progress=False)
+    bf = _write(tmp_path / "addr.tsv", BALANCES)
+    ingest.ingest_balances(conn, file=bf, progress=False)
+
     top = query.top_addresses(conn, 2)
-    assert [r["address"] for r in top] == [
-        "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
-        "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
-    ]
+    assert [r["address"] for r in top] == ["AddrCoinbase", "AddrFunded"]
+
     s = query.stats(conn)
-    assert s["addresses"] == 3
-    assert s["total_balance_sat"] == 6857585654 + 100000000 + 250
-    assert s["enriched_with_tx_count"] == 0
+    assert s["addresses_ever_held"] == 3
+    assert s["currently_funded"] == 2
+    assert s["total_balance_sat"] == 5000000000 + 100000000
+    assert s["outputs_through"] == "20120101"
 
 
-def test_search_prefix(tmp_path, conn):
-    f = tmp_path / "dump.tsv"
-    f.write_text(SAMPLE)
-    ingest.ingest_dump(conn, file=str(f), progress=False)
-    res = query.search_addresses(conn, "bc1", 10)
-    assert len(res) == 1
-    assert res[0]["address"].startswith("bc1")
+# ---- downloader (pure logic; no network) ------------------------------------
+
+def test_parse_index_extracts_filenames():
+    html = (
+        '<a href="blockchair_bitcoin_outputs_20090103.tsv.gz">x</a> '
+        '<a href="blockchair_bitcoin_outputs_20090104.tsv.gz">y</a> '
+        '<a href="other.txt">z</a>'
+    )
+    assert download.parse_index(html, "outputs") == [
+        "blockchair_bitcoin_outputs_20090103.tsv.gz",
+        "blockchair_bitcoin_outputs_20090104.tsv.gz",
+    ]
 
 
-def test_enrich_with_mock_fetcher(tmp_path, conn):
-    f = tmp_path / "dump.tsv"
-    f.write_text(SAMPLE)
-    ingest.ingest_dump(conn, file=str(f), progress=False)
-
-    calls = []
-
-    def fake_fetcher(addr):
-        calls.append(addr)
-        return {"balance_sat": 777, "tx_count": 5}
-
-    pend = enrich.pending_addresses(conn, 10)
-    assert len(pend) == 3
-    n = enrich.enrich_addresses(conn, pend, fetcher=fake_fetcher)
-    assert n == 3
-    row = query.get_address(conn, "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa")
-    assert row["tx_count"] == 5
-    assert row["balance_sat"] == 777
-    assert enrich.pending_addresses(conn, 10) == []
+def test_filter_dates():
+    names = [
+        "blockchair_bitcoin_outputs_20090103.tsv.gz",
+        "blockchair_bitcoin_outputs_20150101.tsv.gz",
+        "blockchair_bitcoin_outputs_20200101.tsv.gz",
+    ]
+    out = download._filter_dates(names, since="20100101", until="20190101")
+    assert out == ["blockchair_bitcoin_outputs_20150101.tsv.gz"]
 
 
-def test_enrich_upserts_new_watchlist_address(conn):
-    def fake_fetcher(addr):
-        return {"balance_sat": 12345, "tx_count": 9}
-
-    n = enrich.enrich_addresses(conn, ["1NewWatchedAddr"], fetcher=fake_fetcher)
-    assert n == 1
-    row = query.get_address(conn, "1NewWatchedAddr")
-    assert row["tx_count"] == 9
-    assert row["balance_sat"] == 12345
-
-
-def test_fetch_retry_gives_up_on_bad_address():
-    import urllib.error
-
-    def boom(addr):
-        raise urllib.error.HTTPError(addr, 400, "Bad Request", {}, None)
-
-    assert enrich._fetch_with_retry(boom, "garbage") is None
-
-
-def test_parse_address_stats_payload():
-    payload = {
-        "chain_stats": {"funded_txo_sum": 1000, "spent_txo_sum": 200, "tx_count": 4},
-        "mempool_stats": {"funded_txo_sum": 0, "spent_txo_sum": 0, "tx_count": 1},
-    }
-    import json as _json
-    import urllib.request
-
-    class FakeResp:
-        def __init__(self, data):
-            self._data = data
-        def read(self):
-            return self._data
-        def __enter__(self):
-            return self
-        def __exit__(self, *a):
-            return False
-
-    def fake_urlopen(req, timeout=0):
-        return FakeResp(_json.dumps(payload).encode())
-
-    orig = urllib.request.urlopen
-    urllib.request.urlopen = fake_urlopen
-    try:
-        stats = enrich.fetch_address_stats("1abc")
-    finally:
-        urllib.request.urlopen = orig
-    assert stats == {"balance_sat": 800, "tx_count": 5}
+def test_with_key():
+    assert download._with_key("http://x/y/", "K") == "http://x/y/?key=K"
+    assert download._with_key("http://x/y/?a=1", "K") == "http://x/y/?a=1&key=K"
+    assert download._with_key("http://x/y/", None) == "http://x/y/"

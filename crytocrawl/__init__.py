@@ -1,27 +1,36 @@
-"""crytocrawl - download, store and query Bitcoin address balances & tx counts.
+"""crytocrawl - the set of every Bitcoin address that ever held a balance,
+plus each address's current balance, stored locally and queryable.
 
 Public API (importable):
 
-    from crytocrawl import db, ingest, enrich, query
+    from crytocrawl import db, outputs, ingest, download, query
 
-The most useful query helpers are re-exported here for convenience::
+Convenience re-exports::
 
-    from crytocrawl import open_db, get_address, top_addresses, stats
+    from crytocrawl import open_db, get_address, ever_held, top_addresses, stats
 """
 
 from .db import open_db, init_db
-from .query import get_address, top_addresses, stats, search_addresses, count_addresses
+from .query import (
+    get_address,
+    ever_held,
+    top_addresses,
+    stats,
+    search_addresses,
+    count_addresses,
+)
 
 __all__ = [
     "open_db",
     "init_db",
     "get_address",
+    "ever_held",
     "top_addresses",
     "stats",
     "search_addresses",
     "count_addresses",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 SATS_PER_BTC = 100_000_000

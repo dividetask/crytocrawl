@@ -1,23 +1,26 @@
 """SQLite storage layer for crytocrawl.
 
-We store balances in **satoshis** as an INTEGER (exact), and only convert to a
-BTC float at display/query time. Storing the float directly would lose
-precision (a satoshi is 1e-8 BTC and floats cannot represent every value
-exactly), so the integer is the source of truth.
+Data model
+----------
+Every address that has **ever held a balance** (i.e. was ever the recipient of
+a transaction output carrying value) gets a row. Presence of a row *is* the
+"ever held a balance" fact. ``balance_sat`` is the address's **current**
+balance in satoshis (0 if it received coins in the past but has since spent
+them all).
+
+Balances are stored in satoshis as an INTEGER (exact); BTC floats are derived
+only at query time so no precision is lost.
 
 Schema
 ------
 addresses
-    address              TEXT  PRIMARY KEY  -- the bitcoin address
-    balance_sat          INTEGER NOT NULL   -- current balance in satoshis
-    tx_count             INTEGER            -- # txs (in+out); NULL until enriched
-    balance_updated_at   TEXT               -- ISO-8601 UTC of last balance write
-    tx_count_updated_at  TEXT               -- ISO-8601 UTC of last tx_count write
+    address             TEXT  PRIMARY KEY  -- the bitcoin address
+    balance_sat         INTEGER NOT NULL   -- current balance in satoshis (0 = spent out)
+    balance_updated_at  TEXT               -- ISO-8601 UTC of last balance write
 
 meta
     key   TEXT PRIMARY KEY
-    value TEXT
-        -- bookkeeping, e.g. dump_date, dump_source, last_ingest_at
+    value TEXT                            -- bookkeeping (dump dates, progress, ...)
 """
 
 from __future__ import annotations
@@ -32,39 +35,40 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS addresses (
     address             TEXT PRIMARY KEY,
     balance_sat         INTEGER NOT NULL DEFAULT 0,
-    tx_count            INTEGER,
-    balance_updated_at  TEXT,
-    tx_count_updated_at TEXT
+    balance_updated_at  TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_addresses_balance_sat
     ON addresses (balance_sat DESC);
 
-CREATE INDEX IF NOT EXISTS idx_addresses_tx_count_null
-    ON addresses (address) WHERE tx_count IS NULL;
-
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
+);
+
+-- Records which dump files have already been aggregated, so a multi-day
+-- ingest of the full history can be stopped and resumed safely.
+CREATE TABLE IF NOT EXISTS ingested_files (
+    name         TEXT PRIMARY KEY,
+    rows         INTEGER,
+    ingested_at  TEXT
 );
 """
 
 
 def open_db(path: str = DEFAULT_DB_PATH, *, fast: bool = False) -> sqlite3.Connection:
-    """Open (and create if needed) the database and ensure the schema exists.
+    """Open (creating if needed) the database and ensure the schema exists.
 
-    Set ``fast=True`` during bulk ingest to trade durability for speed.
+    Set ``fast=True`` for bulk ingest to trade durability for speed (safe: if
+    the process dies mid-ingest you simply re-run it).
     """
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
     if fast:
-        # These make bulk loads dramatically faster. They are safe for an
-        # ingest job: if the process dies you simply re-run the ingest.
         conn.execute("PRAGMA journal_mode = MEMORY")
         conn.execute("PRAGMA synchronous = OFF")
         conn.execute("PRAGMA temp_store = MEMORY")
-        conn.execute("PRAGMA cache_size = -262144")  # ~256 MB page cache
+        conn.execute("PRAGMA cache_size = -1048576")  # ~1 GB page cache
     else:
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA synchronous = NORMAL")
