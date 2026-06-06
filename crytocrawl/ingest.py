@@ -45,23 +45,42 @@ def _open_source(file: Optional[str], url: Optional[str]) -> Tuple[IO[bytes], st
     return resp, f"url:{target}"
 
 
-def parse_rows(text_stream: Iterable[str]) -> Iterator[Tuple[str, int]]:
+SATS_PER_BTC = 100_000_000
+
+
+def _to_sat(value: str, unit: str) -> int:
+    """Convert a balance string to integer satoshis.
+
+    unit='sat' -> integer satoshis; 'btc' -> BTC (may be decimal); 'auto' ->
+    treat as BTC when a decimal point is present, else satoshis. LoyceV's
+    with-balance dump (mirrored from Blockchair) is in satoshis, but other
+    mirrors express BTC, so auto-detection avoids a silent 1e8 error.
+    """
+    value = value.strip()
+    if unit == "sat":
+        return int(value)
+    if unit == "btc" or (unit == "auto" and "." in value):
+        return round(float(value) * SATS_PER_BTC)
+    return int(value)
+
+
+def parse_rows(text_stream: Iterable[str], unit: str = "auto") -> Iterator[Tuple[str, int]]:
     """Yield ``(address, balance_sat)`` from decoded TSV lines, skipping header."""
     first = True
     for line in text_stream:
         line = line.rstrip("\n")
         if not line:
             continue
-        parts = line.split("\t")
+        parts = line.replace("\t", " ").split()
         if len(parts) < 2:
             continue
         addr, bal = parts[0], parts[1]
         if first:
             first = False
-            if bal.strip().lower() == "balance" or not bal.strip().isdigit():
+            if bal.strip().lower() == "balance" or addr.strip().lower() == "address":
                 continue
         try:
-            yield addr, int(bal)
+            yield addr, _to_sat(bal, unit)
         except ValueError:
             continue
 
@@ -84,10 +103,13 @@ def ingest_balances(
     url: Optional[str] = None,
     batch_size: int = BATCH_SIZE,
     zero_first: bool = True,
+    unit: str = "auto",
     progress: bool = True,
 ) -> int:
-    """Apply current balances from a Blockchair addresses dump.
+    """Apply current balances from an ``address<TAB>balance`` dump.
 
+    Works with the Blockchair addresses dump and the LoyceV with-balance mirror.
+    ``unit`` ('auto'|'sat'|'btc') controls how the balance column is interpreted.
     With ``zero_first`` (default) all stored balances are reset to 0 before the
     dump is applied, guaranteeing the table reflects *current* balances exactly.
     Returns the number of funded address rows written.
@@ -111,7 +133,7 @@ def ingest_balances(
             conn.execute("UPDATE addresses SET balance_sat = 0, balance_updated_at = ?", (now,))
 
         batch = []
-        for addr, bal in parse_rows(text):
+        for addr, bal in parse_rows(text, unit):
             batch.append((addr, bal))
             if len(batch) >= batch_size:
                 _upsert_batch(conn, batch, now)

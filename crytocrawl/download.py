@@ -22,6 +22,26 @@ from typing import List, Optional
 BASE = "https://gz.blockchair.com/bitcoin"
 _USER_AGENT = "crytocrawl/0.2 (+https://github.com/dividetask/crytocrawl)"
 
+# Free, no-API-key single-file sources (LoyceV's public dumps). Filenames can
+# change over time, so these are sensible defaults you can override with --url.
+LOYCE_SOURCES = {
+    # Every address that ever appeared -> the "ever held a balance" set.
+    "loyce-all": "http://alladdresses.loyce.club/Bitcoin_addresses_LATEST.txt.gz",
+    # Addresses with a current balance (address<TAB>balance).
+    "loyce-balance": "http://addresses.loyce.club/blockchair_bitcoin_addresses_latest.tsv.gz",
+}
+
+
+def download_url(
+    url: str, dest_dir: str, *, resume: bool = True, progress: bool = True
+) -> str:
+    """Download a single file ``url`` into ``dest_dir``; return its local path."""
+    os.makedirs(dest_dir, exist_ok=True)
+    name = url.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1] or "download"
+    dest = os.path.join(dest_dir, name)
+    download_file(url, dest, resume=resume, progress=progress)
+    return dest
+
 
 def _index_url(dataset: str) -> str:
     return f"{BASE}/{dataset}/"

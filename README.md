@@ -4,84 +4,97 @@ A local, queryable store of **every Bitcoin address that has ever held a
 balance**, with each address's **current balance**. Pure Python standard
 library — nothing to `pip install` to run it; data lives in one SQLite file.
 
-## What "ever held a balance" means and how this gets it
+## TL;DR — the free, no-key, no-node way
 
-An address has held a balance if and only if it was ever the **recipient of a
-transaction output** carrying value. That fact only exists in the full history
-of the chain, so the dataset is built in two phases from
-[Blockchair's bulk dumps](https://gz.blockchair.com/bitcoin/):
+You do **not** need a Blockchair API key, and you do **not** need to run a node
+or crawl the chain. Two free public files (published by *LoyceV*, derived from a
+full archival node) give you everything:
 
-1. **`ingest-outputs`** — aggregate the distinct `recipient` of every output
-   (value > 0) across **all** daily *output* dumps since 2009. This is the
-   complete "ever held a balance" set. Each address is stored with balance 0.
-2. **`ingest-balances`** — apply the *addresses* dump (current non-zero
-   balances) on top. Addresses that received coins in the past but have since
-   spent them all stay in the table with a current balance of **0**.
+```bash
+export CRYTOCRAWL_DB=bitcoin.db
 
-> The current-balance-only addresses dump alone is **not** enough — it omits
-> every spent-out address. The output-history aggregation is what makes the set
-> complete.
+# 1. Every address that ever appeared = every address that ever held a balance.
+python3 -m crytocrawl download --source loyce-all     --dir dumps
+python3 -m crytocrawl ingest-addresses dumps/Bitcoin_addresses_LATEST.txt.gz
+
+# 2. Current balance for every funded address.
+python3 -m crytocrawl download --source loyce-balance --dir dumps
+python3 -m crytocrawl ingest-balances --file dumps/blockchair_bitcoin_addresses_latest.tsv.gz
+
+# 3. Query.
+python3 -m crytocrawl exists 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa   # yes/no (exit 0/1)
+python3 -m crytocrawl get    1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa   # current balance
+python3 -m crytocrawl stats
+python3 -m crytocrawl top -n 25
+```
+
+That's the whole thing. The rest of this README explains the model, the
+alternatives, and the exact behaviour.
+
+## What "ever held a balance" means
+
+An address has held a balance if and only if it was ever the recipient of a
+transaction output — and an address can only be spent from after it has
+received, so **every address that ever appeared on the blockchain has held a
+balance**. That historical set is exactly LoyceV's "all addresses ever" list.
+
+The data is built in two phases:
+
+1. **`ingest-addresses`** loads the flat "every address ever" list → the
+   complete ever-held set (each stored with balance 0).
+2. **`ingest-balances`** applies the current-balance list on top. Addresses that
+   received coins in the past but have since spent them all stay in the table
+   with a current balance of **0**.
+
+> The current-balance list alone is **not** enough — it omits every spent-out
+> address. The "all addresses ever" list is what makes the set complete.
 
 Balances are stored as integer **satoshis** (exact) and shown as BTC floats at
-query time, so no precision is lost. Presence of a row *is* the "ever held a
-balance" fact.
+query time, so no precision is lost. **Presence of a row is the "ever held a
+balance" fact.**
+
+## Data sources (pick one)
+
+| Source | API key? | Run a node? | How |
+|---|---|---|---|
+| **LoyceV free dumps** *(recommended)* | No | No | `loyce-all` + `loyce-balance` as above. Trusts LoyceV's extraction. |
+| Blockchair dumps | Usually yes (history) | No | `ingest-outputs` on the full output-dump history + `ingest-balances`. |
+| Your own full node | No | Yes | Scan blocks for output addresses; `dumptxoutset` for balances. Most authoritative. |
+
+All three produce the same table; only ingest changes. The LoyceV path is the
+one wired up for "no key, no node".
+
+> **Filenames:** LoyceV occasionally renames its files. The `download --source`
+> presets use the current known names, but if a download 404s, grab the file
+> from `http://alladdresses.loyce.club/` / `http://addresses.loyce.club/` and
+> point `ingest-addresses` / `ingest-balances --file` straight at it — the
+> ingest commands accept any local path. `ingest-balances` also has
+> `--unit auto|sat|btc` in case a mirror expresses balances in BTC.
 
 ## Requirements & expectations
 
 - Python 3.9+. No third-party packages.
-- The full output-dump history is **hundreds of GB compressed** (one file per
-  day since 2009). Downloading is bandwidth/time heavy; aggregation is a
-  multi-hour, single pass. The resulting SQLite DB is in the low tens of GB and
-  holds **hundreds of millions** of addresses.
-- Blockchair may require an API key for the full historical archive. Set
-  `BLOCKCHAIR_API_KEY` and it's appended to download requests automatically.
-
-## End-to-end
-
-```bash
-# 0. (optional) pick where the DB lives
-export CRYTOCRAWL_DB=bitcoin.db
-
-# 1. Download the full output-dump history (resumable; re-run to continue).
-python3 -m crytocrawl download --dataset outputs --dir dumps/outputs
-#    ...and the current-balance dump:
-python3 -m crytocrawl download --dataset addresses --dir dumps/addresses
-
-# 2. Build the 'ever held a balance' set from every output dump:
-python3 -m crytocrawl ingest-outputs dumps/outputs
-
-# 3. Apply current balances:
-python3 -m crytocrawl ingest-balances --file dumps/addresses/blockchair_bitcoin_addresses_latest.tsv.gz
-
-# 4. Query from the terminal:
-python3 -m crytocrawl stats
-python3 -m crytocrawl exists 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa   # -> yes/no (exit 0/1)
-python3 -m crytocrawl get    1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa   # -> current balance
-python3 -m crytocrawl top -n 25
-python3 -m crytocrawl search bc1q --limit 50
-```
-
-Both ingest steps are **resumable/idempotent**: processed output files are
-recorded, so you can stop and restart `ingest-outputs`; `ingest-balances`
-resets balances first so re-running with a fresh dump always yields exact
-*current* balances. Add `--json` to any query for machine-readable output.
-
-You can also point ingest at files you've already downloaded by any means, or
-let `download` fetch them. `ingest-outputs` accepts files, globs, or directories.
+- The "all addresses ever" file is large (a few GB compressed, ~1B+ lines);
+  loading it is a one-pass, multi-hour job. The resulting SQLite DB is tens of
+  GB. Downloads are resumable; ingests are idempotent (processed files are
+  recorded, so you can stop and restart).
 
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `init` | Create the database file/schema |
-| `download --dataset {outputs,addresses} --dir D [--since YYYYMMDD] [--until YYYYMMDD]` | Fetch dumps (resumable) |
-| `ingest-outputs PATHS...` | Aggregate output dumps → every address that ever held a balance |
-| `ingest-balances [--file F \| --url U] [--no-zero-first]` | Apply current balances |
+| `download --source {loyce-all,loyce-balance,blockchair-outputs,blockchair-addresses} --dir D` | Fetch dumps (resumable). `--url U` for an arbitrary file. |
+| `ingest-addresses PATHS...` | Load a flat "every address ever" list → ever-held set *(recommended)* |
+| `ingest-outputs PATHS...` | Alt: aggregate Blockchair output dumps → ever-held set |
+| `ingest-balances [--file F \| --url U] [--unit auto\|sat\|btc] [--no-zero-first]` | Apply current balances |
 | `exists ADDR` | Did this address ever hold a balance? (`yes`/`no`, exit 0/1) |
 | `get ADDR` | Show an address's current balance |
 | `top [-n N]` | Richest addresses by current balance |
 | `search PREFIX [--limit N]` | Addresses by prefix |
 | `stats` | Totals, # ever-held, # currently funded, dump dates |
+
+Add `--json` to any query for machine-readable output.
 
 ## Query directly with the `sqlite3` CLI
 
@@ -127,5 +140,5 @@ meta(key TEXT PRIMARY KEY, value TEXT)    -- dump dates, progress
 python3 -m pytest -q
 ```
 
-Fully offline — output/address parsing, aggregation, resume, balance application
-and the downloader's URL/index logic are all covered without network access.
+Fully offline — address-list parsing, balance parsing (incl. sat/BTC units),
+resume, and the downloader's URL/index logic are all covered without network.

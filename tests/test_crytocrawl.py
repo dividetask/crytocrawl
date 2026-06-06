@@ -9,7 +9,10 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from crytocrawl import db, download, ingest, outputs, query  # noqa: E402
+from crytocrawl import addresslist, db, download, ingest, outputs, query  # noqa: E402
+
+# A LoyceV-style "all addresses ever" list: one address per line, no header.
+ALL_ADDRESSES = "AddrCoinbase\nAddrSpent\nAddrFunded\n\nAddrOther\n"
 
 # An output dump: columns include recipient + value (satoshis).
 OUTPUTS = (
@@ -95,6 +98,41 @@ def test_outputs_missing_recipient_column_errors():
         list(outputs.iter_recipients(["block_id\tvalue\n", "1\t2\n"]))
 
 
+# ---- flat address-list ingest (LoyceV path) ---------------------------------
+
+def test_iter_addresses_skips_blank_and_header():
+    lines = "address\nAddrA\n\n AddrB \nAddrC\textra\n".splitlines()
+    assert list(addresslist.iter_addresses(lines)) == ["AddrA", "AddrB", "AddrC"]
+
+
+def test_ingest_address_list_builds_ever_held_set(tmp_path, conn):
+    f = _write(tmp_path / "Bitcoin_addresses_LATEST.txt", ALL_ADDRESSES)
+    addresslist.ingest_address_lists(conn, [f], progress=False)
+    assert query.count_addresses(conn) == 4
+    assert query.ever_held(conn, "AddrSpent") is True
+    assert query.ever_held(conn, "Nope") is False
+    assert query.get_address(conn, "AddrSpent")["balance_sat"] == 0
+
+
+def test_ingest_address_list_gz_and_resume(tmp_path, conn):
+    f = _write(tmp_path / "Bitcoin_addresses_LATEST.txt.gz", ALL_ADDRESSES, gz=True)
+    n = addresslist.ingest_address_file(conn, f, progress=False)
+    assert n == 4
+    assert addresslist.ingest_address_file(conn, f, progress=False) == 0  # resume no-op
+
+
+def test_loyce_then_balances_end_to_end(tmp_path, conn):
+    af = _write(tmp_path / "Bitcoin_addresses_LATEST.txt", ALL_ADDRESSES)
+    addresslist.ingest_address_lists(conn, [af], progress=False)
+    bf = _write(tmp_path / "blockchair_bitcoin_addresses_latest.tsv", BALANCES)
+    ingest.ingest_balances(conn, file=bf, progress=False)
+    assert query.get_address(conn, "AddrFunded")["balance_btc"] == 1.0
+    # Appeared but unfunded now -> present, balance 0.
+    assert query.ever_held(conn, "AddrSpent") is True
+    assert query.get_address(conn, "AddrSpent")["balance_sat"] == 0
+    assert query.get_address(conn, "AddrOther")["balance_sat"] == 0
+
+
 # ---- current balances -------------------------------------------------------
 
 def test_ingest_balances_sets_current_and_zeroes_spent(tmp_path, conn):
@@ -174,3 +212,26 @@ def test_with_key():
     assert download._with_key("http://x/y/", "K") == "http://x/y/?key=K"
     assert download._with_key("http://x/y/?a=1", "K") == "http://x/y/?a=1&key=K"
     assert download._with_key("http://x/y/", None) == "http://x/y/"
+
+
+def test_loyce_sources_present():
+    assert "loyce-all" in download.LOYCE_SOURCES
+    assert "loyce-balance" in download.LOYCE_SOURCES
+    assert download.LOYCE_SOURCES["loyce-all"].endswith(".txt.gz")
+
+
+# ---- balance unit handling --------------------------------------------------
+
+def test_to_sat_units():
+    assert ingest._to_sat("6857585654", "sat") == 6857585654
+    assert ingest._to_sat("1.5", "btc") == 150000000
+    assert ingest._to_sat("1.5", "auto") == 150000000          # decimal -> BTC
+    assert ingest._to_sat("250", "auto") == 250                # integer -> sat
+
+
+def test_ingest_balances_btc_unit(tmp_path, conn):
+    af = _write(tmp_path / "all.txt", "AddrFunded\n")
+    addresslist.ingest_address_lists(conn, [af], progress=False)
+    bf = _write(tmp_path / "bal_btc.tsv", "address\tbalance\nAddrFunded\t2.5\n")
+    ingest.ingest_balances(conn, file=bf, unit="btc", progress=False)
+    assert query.get_address(conn, "AddrFunded")["balance_sat"] == 250000000

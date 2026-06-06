@@ -23,6 +23,7 @@ import json
 import sys
 from typing import List
 
+from . import addresslist as addrlistmod
 from . import db as dbmod
 from . import download as dlmod
 from . import ingest as ingestmod
@@ -58,10 +59,35 @@ def cmd_init(args) -> int:
 
 
 def cmd_download(args) -> int:
-    paths = dlmod.download_dataset(
-        args.dataset, args.dir, since=args.since, until=args.until, sleep=args.sleep
-    )
-    print(f"Downloaded/verified {len(paths)} file(s) into {args.dir}")
+    if args.url:
+        path = dlmod.download_url(args.url, args.dir)
+        print(f"Downloaded {path}")
+    elif args.source in dlmod.LOYCE_SOURCES:
+        path = dlmod.download_url(dlmod.LOYCE_SOURCES[args.source], args.dir)
+        print(f"Downloaded {path}")
+    elif args.source == "blockchair-addresses":
+        path = dlmod.download_url(
+            "https://gz.blockchair.com/bitcoin/addresses/"
+            "blockchair_bitcoin_addresses_latest.tsv.gz", args.dir)
+        print(f"Downloaded {path}")
+    elif args.source == "blockchair-outputs":
+        paths = dlmod.download_dataset(
+            "outputs", args.dir, since=args.since, until=args.until, sleep=args.sleep)
+        print(f"Downloaded/verified {len(paths)} file(s) into {args.dir}")
+    else:
+        print("Specify --source or --url", file=sys.stderr)
+        return 2
+    return 0
+
+
+def cmd_ingest_addresses(args) -> int:
+    conn = dbmod.open_db(args.db, fast=True)
+    try:
+        n = addrlistmod.ingest_address_lists(conn, args.paths)
+        total = querymod.count_addresses(conn)
+    finally:
+        conn.close()
+    print(f"Loaded {n} address-list file(s). Addresses that ever held a balance: {total:,}")
     return 0
 
 
@@ -80,7 +106,8 @@ def cmd_ingest_balances(args) -> int:
     conn = dbmod.open_db(args.db, fast=True)
     try:
         n = ingestmod.ingest_balances(
-            conn, file=args.file, url=args.url, zero_first=not args.no_zero_first
+            conn, file=args.file, url=args.url, zero_first=not args.no_zero_first,
+            unit=args.unit,
         )
     finally:
         conn.close()
@@ -155,23 +182,33 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("init", help="create the database")
     sp.set_defaults(func=cmd_init)
 
-    sp = sub.add_parser("download", help="fetch Blockchair dump files (resumable)")
-    sp.add_argument("--dataset", choices=["outputs", "addresses"], default="outputs")
+    sp = sub.add_parser("download", help="fetch dump files (resumable, no API key for loyce-*)")
+    sp.add_argument("--source", choices=[
+        "loyce-all", "loyce-balance", "blockchair-outputs", "blockchair-addresses"],
+        help="loyce-all = every address ever (free); loyce-balance = current balances (free)")
+    sp.add_argument("--url", help="download an arbitrary single file instead")
     sp.add_argument("--dir", required=True, help="destination directory")
-    sp.add_argument("--since", help="earliest file date YYYYMMDD (inclusive)")
-    sp.add_argument("--until", help="latest file date YYYYMMDD (inclusive)")
+    sp.add_argument("--since", help="[blockchair-outputs] earliest file date YYYYMMDD")
+    sp.add_argument("--until", help="[blockchair-outputs] latest file date YYYYMMDD")
     sp.add_argument("--sleep", type=float, default=1.0, help="seconds between files")
     sp.set_defaults(func=cmd_download)
 
+    sp = sub.add_parser("ingest-addresses",
+                        help="load a flat 'every address ever' list (e.g. LoyceV) [recommended]")
+    sp.add_argument("paths", nargs="+", help="address-list files, globs, or directories")
+    sp.set_defaults(func=cmd_ingest_addresses)
+
     sp = sub.add_parser("ingest-outputs",
-                        help="aggregate output dumps into the 'ever held' address set")
+                        help="alt: aggregate Blockchair output dumps into the 'ever held' set")
     sp.add_argument("paths", nargs="+", help="dump files, globs, or directories")
     sp.set_defaults(func=cmd_ingest_outputs)
 
-    sp = sub.add_parser("ingest-balances", help="apply current balances from the addresses dump")
+    sp = sub.add_parser("ingest-balances", help="apply current balances from an address/balance dump")
     g = sp.add_mutually_exclusive_group()
-    g.add_argument("--file", help="local addresses .tsv.gz (or .tsv) dump")
-    g.add_argument("--url", help="URL to fetch (default: Blockchair addresses latest)")
+    g.add_argument("--file", help="local address/balance .tsv.gz (or .tsv) dump")
+    g.add_argument("--url", help="URL to fetch")
+    sp.add_argument("--unit", choices=["auto", "sat", "btc"], default="auto",
+                    help="how to read the balance column (default: auto-detect)")
     sp.add_argument("--no-zero-first", action="store_true",
                     help="do NOT reset balances to 0 before applying (faster, less exact on re-runs)")
     sp.set_defaults(func=cmd_ingest_balances)
