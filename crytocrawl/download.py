@@ -25,10 +25,10 @@ _USER_AGENT = "crytocrawl/0.2 (+https://github.com/dividetask/crytocrawl)"
 # Free, no-API-key single-file sources (LoyceV's public dumps). Filenames can
 # change over time, so these are sensible defaults you can override with --url.
 LOYCE_SOURCES = {
-    # Every address that ever appeared -> the "ever held a balance" set.
-    "loyce-all": "http://alladdresses.loyce.club/Bitcoin_addresses_LATEST.txt.gz",
+    # Every address that ever appeared -> the "ever held a balance" set (one address per line).
+    "loyce-all": "http://alladdresses.loyce.club/all_Bitcoin_addresses_ever_used_sorted.txt.gz",
     # Addresses with a current balance (address<TAB>balance).
-    "loyce-balance": "http://addresses.loyce.club/blockchair_bitcoin_addresses_latest.tsv.gz",
+    "loyce-balance": "http://addresses.loyce.club/Bitcoin_addresses_LATEST.txt.gz",
 }
 
 

@@ -46,11 +46,11 @@ export CRYTOCRAWL_DB=bitcoin.db
 
 # 1. Every address that ever appeared = every address that ever held a balance.
 crytocrawl download --source loyce-all     --dir dumps
-crytocrawl ingest-addresses dumps/Bitcoin_addresses_LATEST.txt.gz
+crytocrawl ingest-addresses dumps/all_Bitcoin_addresses_ever_used_sorted.txt.gz
 
 # 2. Current balance for every funded address (first load: --no-zero-first is faster).
 crytocrawl download --source loyce-balance --dir dumps
-crytocrawl ingest-balances --file dumps/blockchair_bitcoin_addresses_latest.tsv.gz --no-zero-first
+crytocrawl ingest-balances --file dumps/Bitcoin_addresses_LATEST.txt.gz --no-zero-first
 
 # 3. Query.
 crytocrawl exists 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa   # yes/no (exit 0/1)
