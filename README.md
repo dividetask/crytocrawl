@@ -229,10 +229,21 @@ seedcheck "<your seed>" --passphrase "x" --account 1
 seedcheck --seed-file candidates.txt    # one seed per line -> "yes/no  <seed>"
 ```
 
-- Default list: `dumps/all_Bitcoin_addresses_ever_used_sorted.txt.gz` (override
-  with `--file`). It streams the file once; for many checks, load the file into
-  a crytocrawl SQLite DB and pass `--db bitcoin.db` for fast index lookups
-  instead of a full scan.
+- **Lookup source:** if a SQLite DB exists at `bitcoin.db` (or `$CRYTOCRAWL_DB`)
+  it's used automatically for fast indexed lookups; otherwise it streams
+  `dumps/all_Bitcoin_addresses_ever_used_sorted.txt.gz`. Override with `--db
+  <path>` or `--file <path>`. Streaming the ~40 GB file takes a few minutes per
+  run, so for repeated checks build the DB once from the *every-address-ever*
+  list and let `seedcheck` pick it up:
+
+  ```bash
+  crytocrawl ingest-addresses dumps/all_Bitcoin_addresses_ever_used_sorted.txt.gz
+  seedcheck "<your seed>"          # now answers in well under a second
+  ```
+
+  Use `ingest-addresses` (the flat "ever used" list) — not `ingest-balances`,
+  which would only contain *currently-funded* addresses and make an emptied-out
+  wallet read `no`.
 - Exit status: `0` = used (yes), `1` = not used (no), `2` = error — so you can
   script it. With multiple seeds it prints one line each and exits `0`.
 - "Used" means at least one derived address has appeared on-chain. Look the

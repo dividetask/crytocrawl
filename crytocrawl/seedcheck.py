@@ -23,6 +23,7 @@ import sys
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from .derive import derive_from_mnemonic
+from .db import DEFAULT_DB_PATH
 
 DEFAULT_ADDRESS_FILE = "dumps/all_Bitcoin_addresses_ever_used_sorted.txt.gz"
 
@@ -112,9 +113,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("seed", nargs="?", help="the seed to check (omit to read seeds from stdin)")
     p.add_argument("--seed-file", help="file of seeds to check, one per line")
     p.add_argument("--count", type=int, default=4, help="receive+change addresses per algorithm (default: 4)")
-    p.add_argument("--file", dest="addresses_file", default=DEFAULT_ADDRESS_FILE,
-                   help=f"used-address list to check against (default: {DEFAULT_ADDRESS_FILE})")
-    p.add_argument("--db", help="use a crytocrawl SQLite DB instead of scanning the file (faster)")
+    p.add_argument("--file", dest="addresses_file", default=None,
+                   help=f"used-address list to scan (default: {DEFAULT_ADDRESS_FILE})")
+    p.add_argument("--db", default=None,
+                   help=f"crytocrawl SQLite DB for fast lookups (default: {DEFAULT_DB_PATH} if it exists)")
     p.add_argument("--passphrase", default="", help="optional seed passphrase (BIP39/Electrum)")
     p.add_argument("--account", type=int, default=0, help="account index (default: 0)")
     p.add_argument("--no-electrum", action="store_true", help="skip the Electrum algorithms")
@@ -127,9 +129,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("No seed provided.", file=sys.stderr)
         return 2
 
-    if not args.db and not os.path.exists(args.addresses_file):
-        print(f"Address file not found: {args.addresses_file}\n"
-              f"Download it first, or pass --file <path> or --db <sqlite db>.", file=sys.stderr)
+    # Resolve the lookup source: explicit --db/--file wins, else auto-detect the
+    # default SQLite DB (fast), else fall back to the default address file.
+    db = args.db
+    addresses_file = args.addresses_file
+    if not db and not addresses_file:
+        if os.path.exists(DEFAULT_DB_PATH):
+            db = DEFAULT_DB_PATH
+        else:
+            addresses_file = DEFAULT_ADDRESS_FILE
+    if db and not os.path.exists(db):
+        print(f"Database not found: {db}", file=sys.stderr)
+        return 2
+    if not db and not os.path.exists(addresses_file):
+        print(f"Address source not found: {addresses_file}\n"
+              f"Build the DB (crytocrawl ingest-addresses ...) or pass --file <path> / --db <sqlite db>.",
+              file=sys.stderr)
         return 2
 
     # Derive every address for every seed, then make ONE pass over the file.
@@ -141,11 +156,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             index.setdefault(addr, []).append((seed, algo, path))
 
     if not args.json:
-        src = args.db or args.addresses_file
-        print(f"Checking {len(index):,} addresses from {len(seeds)} seed(s) against {src} ...",
+        print(f"Checking {len(index):,} addresses from {len(seeds)} seed(s) against {db or addresses_file} ...",
               file=sys.stderr)
-    found = scan_db(index, args.db) if args.db else scan_file(index, args.addresses_file,
-                                                              progress=not args.json)
+    found = scan_db(index, db) if db else scan_file(index, addresses_file, progress=not args.json)
 
     used_seeds: Dict[str, List[dict]] = {s: [] for s in seeds}
     for addr in found:
