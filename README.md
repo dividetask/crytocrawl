@@ -215,6 +215,30 @@ r = derive_from_mnemonic("abandon abandon ... about", count=5)
 print(r["BIP84"][0]["address"], r["BIP84"][0]["public_key"])
 ```
 
+## Has a seed ever been used? (`seedcheck`)
+
+Give it a seed and it derives the **first 4 receiving + first 4 change
+addresses of every algorithm** (BIP44/49/84/86 and Electrum legacy/segwit/old —
+both chains), checks them against the used-address list, and answers `yes`/`no`.
+
+```bash
+seedcheck "<your seed>"                 # prints yes or no
+seedcheck "<your seed>" -v              # also shows which address/path matched
+seedcheck "<your seed>" --count 10      # check the first 10 of each chain
+seedcheck "<your seed>" --passphrase "x" --account 1
+seedcheck --seed-file candidates.txt    # one seed per line -> "yes/no  <seed>"
+```
+
+- Default list: `dumps/all_Bitcoin_addresses_ever_used_sorted.txt.gz` (override
+  with `--file`). It streams the file once; for many checks, load the file into
+  a crytocrawl SQLite DB and pass `--db bitcoin.db` for fast index lookups
+  instead of a full scan.
+- Exit status: `0` = used (yes), `1` = not used (no), `2` = error — so you can
+  script it. With multiple seeds it prints one line each and exits `0`.
+- "Used" means at least one derived address has appeared on-chain. Look the
+  matched address up (`crytocrawl get <addr>`, or any explorer) to see its
+  current balance.
+
 ## Tests
 
 ```bash
