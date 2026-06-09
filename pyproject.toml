@@ -13,6 +13,7 @@ dependencies = []  # standard library only
 
 [project.scripts]
 crytocrawl = "crytocrawl.cli:main"
+seedderive = "crytocrawl.derive:main"
 
 [tool.setuptools]
 packages = ["crytocrawl"]

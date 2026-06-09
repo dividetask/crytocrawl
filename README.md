@@ -165,6 +165,43 @@ ingested_files(name TEXT PRIMARY KEY, rows INTEGER, ingested_at TEXT)  -- resume
 meta(key TEXT PRIMARY KEY, value TEXT)    -- dump dates, progress
 ```
 
+## Deriving addresses from a seed (`seedderive`)
+
+A separate, self-contained tool (installed alongside `crytocrawl`) that turns a
+seed into the public keys / addresses each wallet standard would produce, so you
+can confirm it reproduces a real wallet's addresses regardless of which one made
+the seed. It only *derives* — it checks nothing against anything.
+
+```bash
+seedderive "your twelve or twenty-four word mnemonic here" --count 5
+seedderive "<mnemonic>" --passphrase "optional 25th word" --pubkeys
+seedderive --seed-hex "000102...0f"        # raw BIP32 seed instead of a mnemonic
+seedderive "<mnemonic>" --json             # machine-readable
+```
+
+For each algorithm it prints the first N receiving addresses and their paths:
+
+| Algorithm | Path | Address type |
+|---|---|---|
+| BIP44 | `m/44'/<account>'/0'/0/i` | P2PKH `1...` |
+| BIP49 | `m/49'/<account>'/0'/0/i` | P2SH-P2WPKH `3...` |
+| BIP84 | `m/84'/<account>'/0'/0/i` | P2WPKH `bc1q...` |
+| BIP86 | `m/86'/<account>'/0'/0/i` | P2TR `bc1p...` |
+
+`--account`/`--change` select the account index and receive(0)/change(1) chain.
+The crypto is pinned to the published BIP32 / BIP49 / BIP84 / BIP86 test vectors
+(`tests/test_derive.py`). If one of your wallets uses a non-standard path
+(e.g. some Electrum or legacy layouts), it may not match — tell me the wallet
+and I'll add its exact scheme.
+
+As a library:
+
+```python
+from crytocrawl.derive import derive_from_mnemonic
+r = derive_from_mnemonic("abandon abandon ... about", count=5)
+print(r["BIP84"][0]["address"], r["BIP84"][0]["public_key"])
+```
+
 ## Tests
 
 ```bash
