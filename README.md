@@ -187,12 +187,25 @@ For each algorithm it prints the first N receiving addresses and their paths:
 | BIP49 | `m/49'/<account>'/0'/0/i` | P2SH-P2WPKH `3...` |
 | BIP84 | `m/84'/<account>'/0'/0/i` | P2WPKH `bc1q...` |
 | BIP86 | `m/86'/<account>'/0'/0/i` | P2TR `bc1p...` |
+| Electrum legacy | `m/<change>/i` (salt `electrum`) | P2PKH `1...` |
+| Electrum segwit | `m/0'/<change>/i` (salt `electrum`) | P2WPKH `bc1q...` |
+| Electrum old (pre-2.0) | non-BIP32 stretch+sequence | P2PKH `1...` (uncompressed) |
 
-`--account`/`--change` select the account index and receive(0)/change(1) chain.
-The crypto is pinned to the published BIP32 / BIP49 / BIP84 / BIP86 test vectors
-(`tests/test_derive.py`). If one of your wallets uses a non-standard path
-(e.g. some Electrum or legacy layouts), it may not match — tell me the wallet
-and I'll add its exact scheme.
+`--account`/`--change` select the account index and receive(0)/change(1) chain;
+`--no-electrum` skips the Electrum algorithms.
+
+**Electrum notes.** Electrum doesn't use BIP39 — it stretches the seed with the
+PBKDF2 salt `"electrum"` and uses its own paths, so the same phrase produces
+different addresses than the BIP rows. The **old (pre-2.0)** scheme isn't BIP32
+at all; enter either the 12 old-format words or the 32-char hex seed (both give
+the same result). The bundled old wordlist is validated by Electrum's test
+vector, but for a high-stakes recovery you can pass the hex seed (which bypasses
+the wordlist entirely) or supply Electrum's official wordlist.
+
+The crypto is pinned to published test vectors — BIP32 / BIP49 / BIP84 / BIP86,
+and Electrum's own legacy / segwit / old seed vectors (`tests/test_derive.py`).
+If one of your wallets still doesn't match (e.g. a 2FA Electrum wallet, or a
+different account layout), tell me the wallet and I'll add its exact scheme.
 
 As a library:
 

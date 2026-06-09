@@ -22,6 +22,7 @@ import json
 import sys
 from typing import Callable, Dict, List, Optional
 
+from . import electrum as el
 from . import hdwallet as hd
 from . import walletcrypto as w
 
@@ -55,13 +56,42 @@ def _derive_from_master(master: hd.HDKey, count: int, account: int, change: int)
     return out
 
 
+def _entry(index: int, path: str, kind: str, address: str, pubkey: str = None) -> dict:
+    return {"index": index, "path": path, "address_type": kind,
+            "public_key": pubkey, "public_key_uncompressed": None, "address": address}
+
+
+def _electrum_sections(mnemonic: str, passphrase: str, count: int, change: int) -> Dict[str, List[dict]]:
+    out: Dict[str, List[dict]] = {}
+    out["Electrum-Legacy"] = [
+        _entry(i, path, "P2PKH", addr) for i, (path, addr)
+        in enumerate(el.standard_legacy_addresses(mnemonic, passphrase=passphrase, count=count, change=change))]
+    out["Electrum-Segwit"] = [
+        _entry(i, path, "P2WPKH", addr) for i, (path, addr)
+        in enumerate(el.standard_segwit_addresses(mnemonic, passphrase=passphrase, count=count, change=change))]
+    try:
+        old = el.old_addresses(mnemonic, count=count, change=change)
+        out["Electrum-Old"] = [_entry(i, label, "P2PKH-uncompressed", addr)
+                               for i, (label, addr) in enumerate(old)]
+    except ValueError:
+        pass  # input isn't a valid old-format Electrum seed; skip that algorithm
+    return out
+
+
 def derive_from_mnemonic(mnemonic: str, *, passphrase: str = "", count: int = 5,
-                         account: int = 0, change: int = 0) -> Dict[str, List[dict]]:
-    """Derive addresses for a BIP39 mnemonic (no wordlist/checksum validation, so
-    any seed phrase is accepted as-is). ``passphrase`` is the optional BIP39
-    25th-word passphrase."""
+                         account: int = 0, change: int = 0,
+                         electrum: bool = True) -> Dict[str, List[dict]]:
+    """Derive addresses for a seed across every algorithm.
+
+    The BIP standards treat the input as a BIP39 mnemonic; Electrum algorithms
+    treat it as an Electrum seed. No wordlist/checksum validation, so any phrase
+    is accepted as-is. ``passphrase`` is the optional BIP39/Electrum passphrase.
+    """
     master = hd.master_from_seed(hd.bip39_seed(mnemonic, passphrase))
-    return _derive_from_master(master, count, account, change)
+    result = _derive_from_master(master, count, account, change)
+    if electrum:
+        result.update(_electrum_sections(mnemonic, passphrase, count, change))
+    return result
 
 
 def derive_from_seed_hex(seed_hex: str, *, count: int = 5, account: int = 0,
@@ -83,6 +113,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--count", type=int, default=5, help="addresses per algorithm (default: 5)")
     p.add_argument("--account", type=int, default=0, help="account index (default: 0)")
     p.add_argument("--change", type=int, default=0, help="0 = receive chain, 1 = change (default: 0)")
+    p.add_argument("--no-electrum", action="store_true", help="skip the Electrum algorithms")
     p.add_argument("--pubkeys", action="store_true", help="also print the public key hex")
     p.add_argument("--json", action="store_true", help="machine-readable output")
     args = p.parse_args(argv)
@@ -96,7 +127,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         result = derive_from_seed_hex(seed, count=args.count, account=args.account, change=args.change)
     else:
         result = derive_from_mnemonic(seed, passphrase=args.passphrase, count=args.count,
-                                      account=args.account, change=args.change)
+                                      account=args.account, change=args.change,
+                                      electrum=not args.no_electrum)
 
     if args.json:
         print(json.dumps(result, indent=2))

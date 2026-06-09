@@ -6,6 +6,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from crytocrawl import derive  # noqa: E402
+from crytocrawl import electrum as el  # noqa: E402
 from crytocrawl import hdwallet as hd  # noqa: E402
 from crytocrawl import walletcrypto as w  # noqa: E402
 
@@ -47,7 +48,7 @@ def test_official_derivation_vectors():
 
 
 def test_structure_and_paths():
-    r = derive.derive_from_mnemonic(ABANDON, count=3, account=0)
+    r = derive.derive_from_mnemonic(ABANDON, count=3, account=0, electrum=False)
     assert set(r) == {"BIP44", "BIP49", "BIP84", "BIP86"}
     assert [e["index"] for e in r["BIP44"]] == [0, 1, 2]
     assert r["BIP44"][0]["path"] == "m/44'/0'/0'/0/0"
@@ -69,6 +70,55 @@ def test_seed_hex_path():
     # deterministic & well-formed (engine pinned by test_bip32_master_vector)
     assert r["BIP84"][0]["address"].startswith("bc1q")
     assert r["BIP86"][0]["address"].startswith("bc1p")
+
+
+# ---- Electrum official vectors ----------------------------------------------
+
+ELECTRUM_LEGACY = "cycle rocket west magnet parrot shuffle foot correct salt library feed song"
+ELECTRUM_SEGWIT = "bitter grass shiver impose acquire brush forget axis eager alone wine silver"
+ELECTRUM_OLD_WORDS = "powerful random nobody notice nothing important anyway look away hidden message over"
+ELECTRUM_OLD_HEX = "acb740e454c3134901d7c8f16497cc1c"
+
+
+def test_electrum_standard_legacy_vector():
+    assert el.standard_legacy_addresses(ELECTRUM_LEGACY, count=1)[0] == \
+        ("m/0/0", "1NNkttn1YvVGdqBW4PR6zvc3Zx3H5owKRf")
+
+
+def test_electrum_standard_segwit_vector():
+    assert el.standard_segwit_addresses(ELECTRUM_SEGWIT, count=1)[0] == \
+        ("m/0'/0/0", "bc1q3g5tmkmlvxryhh843v4dz026avatc0zzr6h3af")
+
+
+def test_electrum_old_from_words_and_hex():
+    assert el.old_seed_to_hex(ELECTRUM_OLD_WORDS) == ELECTRUM_OLD_HEX
+    from_words = el.old_addresses(ELECTRUM_OLD_WORDS, count=1)[0][1]
+    from_hex = el.old_addresses(ELECTRUM_OLD_HEX, count=1)[0][1]
+    assert from_words == from_hex == "1FJEEB8ihPMbzs2SkLmr37dHyRFzakqUmo"
+
+
+def test_electrum_old_rejects_non_old_seed():
+    import pytest
+    with pytest.raises(ValueError):
+        el.old_seed_to_hex("abandon abandon abandon about")  # not in old wordlist
+
+
+def test_derive_includes_electrum_sections():
+    r = derive.derive_from_mnemonic(ELECTRUM_LEGACY, count=2)
+    assert "Electrum-Legacy" in r and "Electrum-Segwit" in r
+    assert r["Electrum-Legacy"][0]["address"] == "1NNkttn1YvVGdqBW4PR6zvc3Zx3H5owKRf"
+    # a BIP39-style phrase is not a valid old seed -> Electrum-Old omitted
+    assert "Electrum-Old" not in derive.derive_from_mnemonic(ABANDON, count=1)
+
+
+def test_derive_old_section_present_for_old_seed():
+    r = derive.derive_from_mnemonic(ELECTRUM_OLD_WORDS, count=1)
+    assert r["Electrum-Old"][0]["address"] == "1FJEEB8ihPMbzs2SkLmr37dHyRFzakqUmo"
+
+
+def test_no_electrum_flag():
+    r = derive.derive_from_mnemonic(ELECTRUM_LEGACY, count=1, electrum=False)
+    assert not any(k.startswith("Electrum") for k in r)
 
 
 def test_cli_human_and_json(capsys):
