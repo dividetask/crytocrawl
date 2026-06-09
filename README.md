@@ -4,6 +4,37 @@ A local, queryable store of **every Bitcoin address that has ever held a
 balance**, with each address's **current balance**. Pure Python standard
 library — nothing to `pip install` to run it; data lives in one SQLite file.
 
+## Install (fresh server)
+
+No third-party dependencies — just Python 3.9+. On a clean Debian/Ubuntu VM:
+
+```bash
+git clone https://github.com/dividetask/crytocrawl.git
+cd crytocrawl
+bash install.sh        # installs python3/venv + the `crytocrawl` command into ~/crytocrawl-venv
+source ~/crytocrawl-venv/bin/activate
+crytocrawl --help
+```
+
+`install.sh` also installs the optional `sqlite3` CLI (handy for querying the DB
+directly; not required — the tool uses Python's built-in sqlite3).
+
+Prefer to do it by hand, or on another OS:
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install .          # registers the `crytocrawl` command
+```
+
+Or skip installing entirely and run it straight from the repo:
+
+```bash
+python3 -m crytocrawl --help
+```
+
+All three give you the same CLI; the examples below use `crytocrawl` (swap in
+`python3 -m crytocrawl` if you didn't install).
+
 ## TL;DR — the free, no-key, no-node way
 
 You do **not** need a Blockchair API key, and you do **not** need to run a node
@@ -14,18 +45,18 @@ full archival node) give you everything:
 export CRYTOCRAWL_DB=bitcoin.db
 
 # 1. Every address that ever appeared = every address that ever held a balance.
-python3 -m crytocrawl download --source loyce-all     --dir dumps
-python3 -m crytocrawl ingest-addresses dumps/Bitcoin_addresses_LATEST.txt.gz
+crytocrawl download --source loyce-all     --dir dumps
+crytocrawl ingest-addresses dumps/Bitcoin_addresses_LATEST.txt.gz
 
-# 2. Current balance for every funded address.
-python3 -m crytocrawl download --source loyce-balance --dir dumps
-python3 -m crytocrawl ingest-balances --file dumps/blockchair_bitcoin_addresses_latest.tsv.gz
+# 2. Current balance for every funded address (first load: --no-zero-first is faster).
+crytocrawl download --source loyce-balance --dir dumps
+crytocrawl ingest-balances --file dumps/blockchair_bitcoin_addresses_latest.tsv.gz --no-zero-first
 
 # 3. Query.
-python3 -m crytocrawl exists 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa   # yes/no (exit 0/1)
-python3 -m crytocrawl get    1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa   # current balance
-python3 -m crytocrawl stats
-python3 -m crytocrawl top -n 25
+crytocrawl exists 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa   # yes/no (exit 0/1)
+crytocrawl get    1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa   # current balance
+crytocrawl stats
+crytocrawl top -n 25
 ```
 
 That's the whole thing. The rest of this README explains the model, the
