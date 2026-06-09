@@ -6,7 +6,7 @@ library — nothing to `pip install` to run it; data lives in one SQLite file.
 
 ## Install (fresh server)
 
-No third-party dependencies — just Python 3.9+. On a clean Debian/Ubuntu VM:
+No third-party dependencies — just Python 3.8+. On a clean Debian/Ubuntu VM:
 
 ```bash
 git clone https://github.com/dividetask/crytocrawl.git
@@ -104,7 +104,7 @@ one wired up for "no key, no node".
 
 ## Requirements & expectations
 
-- Python 3.9+. No third-party packages.
+- Python 3.8+. No third-party packages.
 - The "all addresses ever" file is large (a few GB compressed, ~1B+ lines);
   loading it is a one-pass, multi-hour job. The resulting SQLite DB is tens of
   GB. Downloads are resumable; ingests are idempotent (processed files are

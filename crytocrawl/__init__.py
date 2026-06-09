@@ -31,6 +31,6 @@ __all__ = [
     "count_addresses",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 SATS_PER_BTC = 100_000_000

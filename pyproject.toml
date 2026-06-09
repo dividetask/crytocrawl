@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "crytocrawl"
-version = "0.2.0"
+version = "0.2.1"
 description = "Local, queryable store of every Bitcoin address that ever held a balance, with current balances."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.8"
 license = { text = "MIT" }
 dependencies = []  # standard library only
 
