@@ -93,7 +93,10 @@ def download_file(
     """Download ``url`` to ``dest`` with optional byte-range resume.
 
     Returns the total file size in bytes. If a ``.done`` marker or a fully
-    downloaded file already exists, it is left untouched.
+    downloaded file already exists, it is left untouched. The ``.done`` marker is
+    written only when the number of bytes received matches the size the server
+    advertised, so a dropped connection leaves the file resumable (no false
+    "complete") and raises instead of silently truncating.
     """
     done_marker = dest + ".done"
     if os.path.exists(done_marker) and os.path.exists(dest):
@@ -108,21 +111,36 @@ def download_file(
         headers["Range"] = f"bytes={existing}-"
 
     req = urllib.request.Request(full_url, headers=headers)
-    mode = "ab" if existing else "wb"
-    with urllib.request.urlopen(req, timeout=timeout) as resp, open(dest, mode) as fh:  # noqa: S310
-        # If the server ignored Range (status 200) restart from scratch.
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
         if existing and resp.status == 200:
-            fh.close()
-            fh = open(dest, "wb")
+            existing = 0  # server ignored Range; restart from scratch
+        # Work out the absolute expected total size, if the server tells us.
+        content_range = resp.headers.get("Content-Range")
+        clen = resp.headers.get("Content-Length")
+        if content_range and "/" in content_range and content_range.rsplit("/", 1)[1].strip().isdigit():
+            expected_total = int(content_range.rsplit("/", 1)[1].strip())
+        elif clen is not None and clen.strip().isdigit():
+            expected_total = existing + int(clen)
+        else:
+            expected_total = None
+        mode = "ab" if existing else "wb"
         downloaded = existing
-        while True:
-            chunk = resp.read(1 << 20)
-            if not chunk:
-                break
-            fh.write(chunk)
-            downloaded += len(chunk)
-            if progress:
-                print(f"\r  {os.path.basename(dest)}: {downloaded/1e6:,.1f} MB", end="", file=sys.stderr)
+        with open(dest, mode) as fh:
+            while True:
+                chunk = resp.read(1 << 20)
+                if not chunk:
+                    break
+                fh.write(chunk)
+                downloaded += len(chunk)
+                if progress:
+                    print(f"\r  {os.path.basename(dest)}: {downloaded/1e6:,.1f} MB", end="", file=sys.stderr)
+
+    if expected_total is not None and downloaded != expected_total:
+        if progress:
+            print(f"\r  {os.path.basename(dest)}: INCOMPLETE {downloaded:,}/{expected_total:,} bytes "
+                  "— re-run the same command to resume.", file=sys.stderr)
+        raise IOError(f"incomplete download for {dest}: got {downloaded} of {expected_total} bytes "
+                      "(connection dropped). Re-run to resume; no .done marker written.")
     open(done_marker, "w").close()
     if progress:
         print(f"\r  {os.path.basename(dest)}: {downloaded/1e6:,.1f} MB done", file=sys.stderr)
