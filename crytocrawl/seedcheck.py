@@ -118,11 +118,27 @@ def _contains_sorted(fh, size: int, addr: bytes) -> bool:
     return False
 
 
+def _last_line(fh, size: int) -> bytes:
+    """Return the last non-empty line of a file without reading the whole thing."""
+    pos = size
+    buf = b""
+    while pos > 0:
+        read = min(65536, pos)
+        pos -= read
+        fh.seek(pos)
+        buf = fh.read(read) + buf
+        stripped = buf.rstrip(b"\r\n")
+        nl = stripped.rfind(b"\n")
+        if nl != -1:
+            return stripped[nl + 1:]
+    return buf.rstrip(b"\r\n")
+
+
 def bisect_file(targets: Iterable[str], path: str, verify: bool = True) -> set:
     """Membership via binary search over a decompressed, sorted address file.
 
-    Instant lookups with no database. Raises if the file looks gzipped or if the
-    sort-order self-check fails, so a "not found" is never silently wrong.
+    Instant lookups with no database. Raises if the file looks gzipped or if a
+    self-check fails, so a "not found" is never silently wrong.
     """
     with open(path, "rb") as probe:
         if probe.read(2) == b"\x1f\x8b":
@@ -132,6 +148,7 @@ def bisect_file(targets: Iterable[str], path: str, verify: bool = True) -> set:
     size = os.fstat(fh.fileno()).st_size
     try:
         if verify:
+            # 1) the search must mechanically find addresses that ARE present
             missing = [s for s in _SENTINELS if not _contains_sorted(fh, size, s.encode())]
             if missing:
                 raise RuntimeError(
@@ -139,6 +156,17 @@ def bisect_file(targets: Iterable[str], path: str, verify: bool = True) -> set:
                     f"via binary search in {path}. The file may be sorted with a non-bytewise "
                     f"collation. Re-sort it with:  LC_ALL=C sort -o {path} {path}\n"
                     "(or pass --no-verify to override if you know the file differs).")
+            # 2) bech32 (bc1...) addresses sort last; if the final entry isn't one,
+            #    the file is truncated or lacks segwit addresses -> false negatives
+            #    for exactly the modern wallets we care about.
+            last = _last_line(fh, size)
+            if not last.startswith(b"bc1"):
+                raise RuntimeError(
+                    f"coverage self-check failed: the last sorted entry in {path} is "
+                    f"{last.decode(errors='replace')!r}, not a bc1... address. The file is "
+                    "likely truncated (incomplete download) and missing segwit/taproot "
+                    "addresses, which would make modern wallets falsely read 'no'. "
+                    "Re-download/complete the dump, or pass --no-verify to override.")
         return {a for a in targets if _contains_sorted(fh, size, a.encode())}
     finally:
         fh.close()

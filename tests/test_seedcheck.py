@@ -87,6 +87,18 @@ def test_bisect_file_rejects_gzip(tmp_path):
         seedcheck.bisect_file([KNOWN_BIP84_0], p.as_posix())
 
 
+def test_bisect_file_truncation_guard(tmp_path):
+    import pytest
+    # sentinels present, but the file ends at a base58 '3...' address (no bc1
+    # tail) -> looks truncated / missing segwit addresses.
+    p = tmp_path / "trunc.txt"
+    lines = list(SENTINELS) + ["3FkenCiXpSLqD8L79intRNXUgjRoH9sjXa"]
+    p.write_text("\n".join(sorted(lines, key=lambda s: s.encode())) + "\n")
+    with pytest.raises(RuntimeError, match="coverage self-check"):
+        seedcheck.bisect_file([KNOWN_BIP84_0], p.as_posix())
+    assert seedcheck.bisect_file([KNOWN_BIP84_0], p.as_posix(), verify=False) == set()
+
+
 def test_check_seed_via_sorted_file(tmp_path):
     path = _sorted_file(tmp_path, [KNOWN_BIP84_0])
     used, matches = seedcheck.check_seed(ABANDON, sorted_file=path, count=4)
