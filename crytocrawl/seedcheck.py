@@ -29,7 +29,7 @@ DEFAULT_ADDRESS_FILE = "dumps/all_Bitcoin_addresses_ever_used_sorted.txt.gz"
 DEFAULT_SORTED_FILE = "dumps/all_Bitcoin_addresses_ever_used_sorted.txt"  # decompressed
 
 
-def addresses_for_seed(seed: str, *, count: int = 4, passphrase: str = "",
+def addresses_for_seed(seed: str, *, count: int = 2, passphrase: str = "",
                        account: int = 0, electrum: bool = True) -> Dict[str, Tuple[str, str]]:
     """Map address -> (algorithm, path) for the first ``count`` receive (chain 0)
     and change (chain 1) addresses of every algorithm."""
@@ -192,7 +192,7 @@ def bisect_file(targets: Iterable[str], path: str, verify: bool = True) -> set:
 
 def check_seed(seed: str, *, addresses_file: Optional[str] = DEFAULT_ADDRESS_FILE,
                db: Optional[str] = None, sorted_file: Optional[str] = None,
-               count: int = 4, passphrase: str = "", account: int = 0,
+               count: int = 2, passphrase: str = "", account: int = 0,
                electrum: bool = True, progress: bool = False) -> Tuple[bool, List[dict]]:
     """Return (used, matches) for one seed."""
     index = addresses_for_seed(seed, count=count, passphrase=passphrase,
@@ -223,7 +223,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("seed", nargs="?", help="the seed to check (omit to read seeds from stdin)")
     p.add_argument("--seed-file", help="file of seeds to check, one per line")
-    p.add_argument("--count", type=int, default=4, help="receive+change addresses per algorithm (default: 4)")
+    p.add_argument("--count", type=int, default=2, help="receive+change addresses per algorithm (default: 2)")
     p.add_argument("--file", dest="addresses_file", default=None,
                    help=f"used-address list to scan (default: {DEFAULT_ADDRESS_FILE})")
     p.add_argument("--db", default=None,
