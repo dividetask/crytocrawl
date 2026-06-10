@@ -108,6 +108,32 @@ def test_bisect_file_trailing_non_address_lines_ok(tmp_path):
     assert found == {KNOWN_BIP84_0}
 
 
+def test_binary_search_matches_brute_force(tmp_path):
+    """Exhaustively check the binary search (incl. every line boundary) against
+    a brute-force scan, so an offset landing on a boundary can't miss a line."""
+    import os
+    import random
+    rnd = random.Random(0)
+    alpha = "01239abxz-"
+    p = tmp_path / "t.txt"
+    bad = 0
+    for _ in range(1500):
+        words = sorted({"".join(rnd.choice(alpha) for _ in range(rnd.randint(1, 6)))
+                        for _ in range(rnd.randint(1, 10))}, key=lambda s: s.encode())
+        p.write_bytes(("\n".join(words) + "\n").encode())
+        wb = [w.encode() for w in words]
+        with open(p, "rb") as fh:
+            size = os.fstat(fh.fileno()).st_size
+            keys = wb + [("".join(rnd.choice(alpha) for _ in range(rnd.randint(1, 6)))).encode()
+                         for _ in range(4)]
+            for k in keys:
+                if seedcheck._contains_sorted(fh, size, k) != (k in wb):
+                    bad += 1
+                if seedcheck._first_ge(fh, size, k) != next((w for w in wb if w >= k), b""):
+                    bad += 1
+    assert bad == 0
+
+
 def test_check_seed_via_sorted_file(tmp_path):
     path = _sorted_file(tmp_path, [KNOWN_BIP84_0])
     used, matches = seedcheck.check_seed(ABANDON, sorted_file=path, count=4)

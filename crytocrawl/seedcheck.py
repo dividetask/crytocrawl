@@ -96,15 +96,31 @@ _SENTINELS = (
 )
 
 
+def _line_start_at_or_after(fh, P: int):
+    """Return (start, line) for the first line whose start offset is >= P.
+
+    Checks the byte before P to know whether P already sits on a line boundary,
+    so a probe that lands exactly on a line start does not skip that line (a
+    boundary bug that could otherwise miss an address -> false negative).
+    """
+    if P <= 0:
+        fh.seek(0)
+        return 0, fh.readline()
+    fh.seek(P - 1)
+    prev = fh.read(1)        # byte at P-1; fh is now positioned at P
+    if prev == b"\n":
+        return P, fh.readline()
+    fh.readline()            # finish the partial line straddling P
+    start = fh.tell()
+    return start, fh.readline()
+
+
 def _contains_sorted(fh, size: int, addr: bytes) -> bool:
-    """Bytewise binary search for one line in a LC_ALL=C-sorted file."""
+    """Bytewise binary search for an exact line in a LC_ALL=C-sorted file."""
     lo, hi = 0, size
     while lo < hi:
         mid = (lo + hi) // 2
-        fh.seek(mid)
-        if mid:
-            fh.readline()  # discard the partial line we landed in
-        line = fh.readline()
+        start, line = _line_start_at_or_after(fh, mid)
         if not line:
             hi = mid
             continue
@@ -112,7 +128,7 @@ def _contains_sorted(fh, size: int, addr: bytes) -> bool:
         if cur == addr:
             return True
         if cur < addr:
-            lo = fh.tell()
+            lo = start + len(line)
         else:
             hi = mid
     return False
@@ -121,23 +137,20 @@ def _contains_sorted(fh, size: int, addr: bytes) -> bool:
 def _first_ge(fh, size: int, key: bytes) -> bytes:
     """Return the first line that is >= key in a bytewise-sorted file (or b'')."""
     lo, hi = 0, size
+    ans = b""
     while lo < hi:
         mid = (lo + hi) // 2
-        fh.seek(mid)
-        if mid:
-            fh.readline()  # discard the partial line
-        start = fh.tell()
-        line = fh.readline()
+        start, line = _line_start_at_or_after(fh, mid)
         if not line:
             hi = mid
             continue
-        if line.rstrip(b"\r\n") < key:
-            lo = fh.tell()
+        cur = line.rstrip(b"\r\n")
+        if cur < key:
+            lo = start + len(line)
         else:
-            hi = start
-    fh.seek(lo)
-    line = fh.readline()
-    return line.rstrip(b"\r\n") if line else b""
+            ans = cur
+            hi = mid
+    return ans
 
 
 def bisect_file(targets: Iterable[str], path: str, verify: bool = True) -> set:

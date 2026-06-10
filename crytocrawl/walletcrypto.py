@@ -48,7 +48,73 @@ def _point_add(p, q):
     return (x3, y3)
 
 
+def _jac_double(P):
+    """Double a point in Jacobian coordinates (X, Y, Z); a=0 for secp256k1."""
+    X1, Y1, Z1 = P
+    if Y1 == 0:
+        return (0, 0, 0)  # point at infinity
+    YY = Y1 * Y1 % _P
+    S = 4 * X1 * YY % _P
+    M = 3 * X1 * X1 % _P
+    X3 = (M * M - 2 * S) % _P
+    Y3 = (M * (S - X3) - 8 * YY * YY) % _P
+    Z3 = 2 * Y1 * Z1 % _P
+    return (X3, Y3, Z3)
+
+
+def _jac_add_affine(P, q):
+    """Add affine point q=(x,y) to Jacobian point P (mixed addition, no inverse)."""
+    if P[2] == 0:
+        return (q[0], q[1], 1)
+    X1, Y1, Z1 = P
+    x2, y2 = q
+    Z1Z1 = Z1 * Z1 % _P
+    U2 = x2 * Z1Z1 % _P
+    S2 = y2 * Z1 * Z1Z1 % _P
+    H = (U2 - X1) % _P
+    r = (S2 - Y1) % _P
+    if H == 0:
+        return _jac_double(P) if r == 0 else (0, 0, 0)
+    HH = H * H % _P
+    HHH = H * HH % _P
+    V = X1 * HH % _P
+    X3 = (r * r - HHH - 2 * V) % _P
+    Y3 = (r * (V - X3) - Y1 * HHH) % _P
+    Z3 = Z1 * H % _P
+    return (X3, Y3, Z3)
+
+
+# Precomputed affine multiples 2^i * G, so a fixed-base multiply k*G is just a
+# sequence of mixed additions (one modular inverse at the very end) instead of
+# ~384 inversions. Built once at import via the affine doubling above.
+_G_TABLE = []
+_acc = _G
+for _i in range(256):
+    _G_TABLE.append(_acc)
+    _acc = _point_add(_acc, _acc)
+
+
+def _scalar_mul_G(k: int):
+    """Fast fixed-base multiply k*G using the precomputed table."""
+    k %= _N
+    R = (0, 0, 0)  # Jacobian infinity
+    i = 0
+    while k:
+        if k & 1:
+            R = _jac_add_affine(R, _G_TABLE[i])
+        k >>= 1
+        i += 1
+    if R[2] == 0:
+        return None
+    zinv = _inv(R[2])
+    zinv2 = zinv * zinv % _P
+    return (R[0] * zinv2 % _P, R[1] * zinv2 % _P * zinv % _P)
+
+
 def _scalar_mul(k: int, point=_G):
+    if point is _G or point == _G:
+        return _scalar_mul_G(k)
+    # General (rare) path for an arbitrary base point: affine double-and-add.
     k %= _N
     result = None
     addend = point
