@@ -140,6 +140,15 @@ def test_check_seed_via_sorted_file(tmp_path):
     assert used is True and matches[0]["address"] == KNOWN_BIP84_0
 
 
+def test_cli_address_direct_check(tmp_path, capsys):
+    f = tmp_path / "used.txt"
+    f.write_text(KNOWN_BIP84_0 + "\n")
+    rc = seedcheck.main(["-a", KNOWN_BIP84_0, "--file", str(f)])
+    assert rc == 0 and capsys.readouterr().out.strip().startswith("yes")
+    rc = seedcheck.main(["-a", "1SomeAddressNotInTheListXXXXXXXXXX", "--file", str(f)])
+    assert rc == 1 and capsys.readouterr().out.strip().startswith("no")
+
+
 def test_cli_yes_no_and_exit_codes(tmp_path, capsys):
     f = tmp_path / "used.txt"
     f.write_text(KNOWN_BIP84_0 + "\n")

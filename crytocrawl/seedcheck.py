@@ -223,6 +223,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("seed", nargs="?", help="the seed to check (omit to read seeds from stdin)")
     p.add_argument("--seed-file", help="file of seeds to check, one per line")
+    p.add_argument("--address", "-a", action="append", default=[], metavar="ADDR",
+                   help="check a literal address directly (no derivation); repeatable. "
+                        "Useful to test an address Electrum shows you against your list.")
     p.add_argument("--count", type=int, default=2, help="receive+change addresses per algorithm (default: 2)")
     p.add_argument("--file", dest="addresses_file", default=None,
                    help=f"used-address list to scan (default: {DEFAULT_ADDRESS_FILE})")
@@ -240,8 +243,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--json", action="store_true", help="machine-readable output")
     args = p.parse_args(argv)
 
-    seeds = _load_seeds(args)
-    if not seeds:
+    seeds = [] if args.address else _load_seeds(args)
+    if not seeds and not args.address:
         print("No seed provided.", file=sys.stderr)
         return 2
 
@@ -266,6 +269,27 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("No lookup source. Pass --db, --sorted-file, or --file.", file=sys.stderr)
         return 2
 
+    def lookup(targets):
+        if db:
+            return scan_db(targets, db)
+        if sorted_file:
+            return bisect_file(targets, sorted_file, verify=not args.no_verify)
+        return scan_file(targets, addresses_file, progress=not args.json)
+
+    # Diagnostic mode: check literal addresses directly, bypassing derivation.
+    if args.address:
+        try:
+            found = lookup(set(args.address))
+        except (ValueError, RuntimeError) as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps([{"address": a, "used": a in found} for a in args.address], indent=2))
+        else:
+            for a in args.address:
+                print(f"{'yes' if a in found else 'no':<3}  {a}")
+        return 0 if found else 1
+
     # Derive every address for every seed, then make ONE pass over the file.
     index: Dict[str, List[Tuple[str, str, str]]] = {}
     for seed in seeds:
@@ -278,12 +302,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"Checking {len(index):,} addresses from {len(seeds)} seed(s) "
               f"against {db or sorted_file or addresses_file} ...", file=sys.stderr)
     try:
-        if db:
-            found = scan_db(index, db)
-        elif sorted_file:
-            found = bisect_file(index, sorted_file, verify=not args.no_verify)
-        else:
-            found = scan_file(index, addresses_file, progress=not args.json)
+        found = lookup(index)
     except (ValueError, RuntimeError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
