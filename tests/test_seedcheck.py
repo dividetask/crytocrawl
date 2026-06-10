@@ -50,6 +50,49 @@ def test_change_address_match(tmp_path):
     assert matches[0]["address"] == change_addr
 
 
+SENTINELS = ("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", "12c6DSiU4Rq3P4ZxziKxzrL5LmMBrzjrJX")
+
+
+def _sorted_file(tmp_path, extra):
+    import subprocess
+    p = tmp_path / "sorted.txt"
+    lines = list(SENTINELS) + list(extra)
+    p.write_text("\n".join(sorted(lines, key=lambda s: s.encode())) + "\n")
+    return str(p)
+
+
+def test_bisect_file_yes_and_no(tmp_path):
+    path = _sorted_file(tmp_path, [KNOWN_BIP84_0])
+    found = seedcheck.bisect_file([KNOWN_BIP84_0, "1zzzzzNotPresentzzzzzzzzzzzzzzzzzz"], path)
+    assert found == {KNOWN_BIP84_0}
+
+
+def test_bisect_file_sentinel_guard(tmp_path):
+    import pytest
+    p = tmp_path / "nosent.txt"
+    p.write_text(KNOWN_BIP84_0 + "\n")  # sorted but missing the sentinels
+    with pytest.raises(RuntimeError):
+        seedcheck.bisect_file([KNOWN_BIP84_0], p.as_posix())
+    # --no-verify bypasses the guard
+    assert seedcheck.bisect_file([KNOWN_BIP84_0], p.as_posix(), verify=False) == {KNOWN_BIP84_0}
+
+
+def test_bisect_file_rejects_gzip(tmp_path):
+    import gzip
+    import pytest
+    p = tmp_path / "f.txt"
+    with gzip.open(p, "wt") as fh:
+        fh.write("\n".join(SENTINELS) + "\n")
+    with pytest.raises(ValueError):
+        seedcheck.bisect_file([KNOWN_BIP84_0], p.as_posix())
+
+
+def test_check_seed_via_sorted_file(tmp_path):
+    path = _sorted_file(tmp_path, [KNOWN_BIP84_0])
+    used, matches = seedcheck.check_seed(ABANDON, sorted_file=path, count=4)
+    assert used is True and matches[0]["address"] == KNOWN_BIP84_0
+
+
 def test_cli_yes_no_and_exit_codes(tmp_path, capsys):
     f = tmp_path / "used.txt"
     f.write_text(KNOWN_BIP84_0 + "\n")

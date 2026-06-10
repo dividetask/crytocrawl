@@ -26,6 +26,7 @@ from .derive import derive_from_mnemonic
 from .db import DEFAULT_DB_PATH
 
 DEFAULT_ADDRESS_FILE = "dumps/all_Bitcoin_addresses_ever_used_sorted.txt.gz"
+DEFAULT_SORTED_FILE = "dumps/all_Bitcoin_addresses_ever_used_sorted.txt"  # decompressed
 
 
 def addresses_for_seed(seed: str, *, count: int = 4, passphrase: str = "",
@@ -85,13 +86,77 @@ def scan_db(targets: Iterable[str], db_path: str) -> set:
         conn.close()
 
 
-def check_seed(seed: str, *, addresses_file: str = DEFAULT_ADDRESS_FILE, db: Optional[str] = None,
+# A handful of addresses that are guaranteed to be in any genuine
+# "every Bitcoin address ever used" list. Used to prove the binary search
+# mechanically works on a given file (right sort order, not gzipped, full list)
+# before we trust a "not found" as a real "no".
+_SENTINELS = (
+    "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",  # genesis / Satoshi coinbase address
+    "12c6DSiU4Rq3P4ZxziKxzrL5LmMBrzjrJX",  # well-known early/large address
+)
+
+
+def _contains_sorted(fh, size: int, addr: bytes) -> bool:
+    """Bytewise binary search for one line in a LC_ALL=C-sorted file."""
+    lo, hi = 0, size
+    while lo < hi:
+        mid = (lo + hi) // 2
+        fh.seek(mid)
+        if mid:
+            fh.readline()  # discard the partial line we landed in
+        line = fh.readline()
+        if not line:
+            hi = mid
+            continue
+        cur = line.rstrip(b"\r\n")
+        if cur == addr:
+            return True
+        if cur < addr:
+            lo = fh.tell()
+        else:
+            hi = mid
+    return False
+
+
+def bisect_file(targets: Iterable[str], path: str, verify: bool = True) -> set:
+    """Membership via binary search over a decompressed, sorted address file.
+
+    Instant lookups with no database. Raises if the file looks gzipped or if the
+    sort-order self-check fails, so a "not found" is never silently wrong.
+    """
+    with open(path, "rb") as probe:
+        if probe.read(2) == b"\x1f\x8b":
+            raise ValueError(f"{path} is gzipped; decompress it first (gunzip -k {path}) "
+                             "— binary search needs random access to plain text.")
+    fh = open(path, "rb")
+    size = os.fstat(fh.fileno()).st_size
+    try:
+        if verify:
+            missing = [s for s in _SENTINELS if not _contains_sorted(fh, size, s.encode())]
+            if missing:
+                raise RuntimeError(
+                    f"sort-order self-check failed: known-used address {missing[0]} not found "
+                    f"via binary search in {path}. The file may be sorted with a non-bytewise "
+                    f"collation. Re-sort it with:  LC_ALL=C sort -o {path} {path}\n"
+                    "(or pass --no-verify to override if you know the file differs).")
+        return {a for a in targets if _contains_sorted(fh, size, a.encode())}
+    finally:
+        fh.close()
+
+
+def check_seed(seed: str, *, addresses_file: Optional[str] = DEFAULT_ADDRESS_FILE,
+               db: Optional[str] = None, sorted_file: Optional[str] = None,
                count: int = 4, passphrase: str = "", account: int = 0,
                electrum: bool = True, progress: bool = False) -> Tuple[bool, List[dict]]:
     """Return (used, matches) for one seed."""
     index = addresses_for_seed(seed, count=count, passphrase=passphrase,
                                account=account, electrum=electrum)
-    found = scan_db(index, db) if db else scan_file(index, addresses_file, progress=progress)
+    if db:
+        found = scan_db(index, db)
+    elif sorted_file:
+        found = bisect_file(index, sorted_file)
+    else:
+        found = scan_file(index, addresses_file, progress=progress)
     matches = [{"address": a, "algorithm": index[a][0], "path": index[a][1]} for a in found]
     return bool(matches), matches
 
@@ -117,6 +182,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                    help=f"used-address list to scan (default: {DEFAULT_ADDRESS_FILE})")
     p.add_argument("--db", default=None,
                    help=f"crytocrawl SQLite DB for fast lookups (default: {DEFAULT_DB_PATH} if it exists)")
+    p.add_argument("--sorted-file", default=None,
+                   help="decompressed, sorted address file for instant binary-search lookups "
+                        "(no database needed)")
+    p.add_argument("--no-verify", action="store_true",
+                   help="skip the sorted-file sort-order self-check (advanced)")
     p.add_argument("--passphrase", default="", help="optional seed passphrase (BIP39/Electrum)")
     p.add_argument("--account", type=int, default=0, help="account index (default: 0)")
     p.add_argument("--no-electrum", action="store_true", help="skip the Electrum algorithms")
@@ -129,22 +199,25 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("No seed provided.", file=sys.stderr)
         return 2
 
-    # Resolve the lookup source: explicit --db/--file wins, else auto-detect the
-    # default SQLite DB (fast), else fall back to the default address file.
+    # Resolve the lookup source. Explicit flags win; otherwise auto-detect, in
+    # order of speed: SQLite DB -> decompressed sorted file (binary search) ->
+    # the gzipped file (streaming scan).
     db = args.db
+    sorted_file = args.sorted_file
     addresses_file = args.addresses_file
-    if not db and not addresses_file:
+    if not (db or sorted_file or addresses_file):
         if os.path.exists(DEFAULT_DB_PATH):
             db = DEFAULT_DB_PATH
+        elif os.path.exists(DEFAULT_SORTED_FILE):
+            sorted_file = DEFAULT_SORTED_FILE
         else:
             addresses_file = DEFAULT_ADDRESS_FILE
-    if db and not os.path.exists(db):
-        print(f"Database not found: {db}", file=sys.stderr)
-        return 2
-    if not db and not os.path.exists(addresses_file):
-        print(f"Address source not found: {addresses_file}\n"
-              f"Build the DB (crytocrawl ingest-addresses ...) or pass --file <path> / --db <sqlite db>.",
-              file=sys.stderr)
+    for label, path in (("Database", db), ("Sorted file", sorted_file), ("Address file", addresses_file)):
+        if path and not os.path.exists(path):
+            print(f"{label} not found: {path}", file=sys.stderr)
+            return 2
+    if not (db or sorted_file or addresses_file):
+        print("No lookup source. Pass --db, --sorted-file, or --file.", file=sys.stderr)
         return 2
 
     # Derive every address for every seed, then make ONE pass over the file.
@@ -156,9 +229,18 @@ def main(argv: Optional[List[str]] = None) -> int:
             index.setdefault(addr, []).append((seed, algo, path))
 
     if not args.json:
-        print(f"Checking {len(index):,} addresses from {len(seeds)} seed(s) against {db or addresses_file} ...",
-              file=sys.stderr)
-    found = scan_db(index, db) if db else scan_file(index, addresses_file, progress=not args.json)
+        print(f"Checking {len(index):,} addresses from {len(seeds)} seed(s) "
+              f"against {db or sorted_file or addresses_file} ...", file=sys.stderr)
+    try:
+        if db:
+            found = scan_db(index, db)
+        elif sorted_file:
+            found = bisect_file(index, sorted_file, verify=not args.no_verify)
+        else:
+            found = scan_file(index, addresses_file, progress=not args.json)
+    except (ValueError, RuntimeError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
 
     used_seeds: Dict[str, List[dict]] = {s: [] for s in seeds}
     for addr in found:

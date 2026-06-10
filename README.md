@@ -229,21 +229,28 @@ seedcheck "<your seed>" --passphrase "x" --account 1
 seedcheck --seed-file candidates.txt    # one seed per line -> "yes/no  <seed>"
 ```
 
-- **Lookup source:** if a SQLite DB exists at `bitcoin.db` (or `$CRYTOCRAWL_DB`)
-  it's used automatically for fast indexed lookups; otherwise it streams
-  `dumps/all_Bitcoin_addresses_ever_used_sorted.txt.gz`. Override with `--db
-  <path>` or `--file <path>`. Streaming the ~40 GB file takes a few minutes per
-  run, so for repeated checks build the DB once from the *every-address-ever*
-  list and let `seedcheck` pick it up:
+- **Lookup source** (auto-detected in this order; override with `--db`,
+  `--sorted-file`, or `--file`):
+  1. **SQLite DB** at `bitcoin.db` (or `$CRYTOCRAWL_DB`) — instant indexed
+     lookups, but the full *ever-used* list is a ~100+ GB database.
+  2. **Decompressed sorted file** `dumps/...sorted.txt` — instant **binary
+     search**, no database, ~half the disk. This is the most disk-efficient
+     option since the dump is already sorted:
 
-  ```bash
-  crytocrawl ingest-addresses dumps/all_Bitcoin_addresses_ever_used_sorted.txt.gz
-  seedcheck "<your seed>"          # now answers in well under a second
-  ```
+     ```bash
+     gunzip -k dumps/all_Bitcoin_addresses_ever_used_sorted.txt.gz
+     seedcheck "<your seed>"        # binary search, well under a second
+     ```
 
-  Use `ingest-addresses` (the flat "ever used" list) — not `ingest-balances`,
-  which would only contain *currently-funded* addresses and make an emptied-out
-  wallet read `no`.
+     It runs a sort-order self-check (looks up known addresses) so a `no` can
+     never be a silent false negative; if the file was sorted with a non-bytewise
+     collation it tells you to `LC_ALL=C sort` it.
+  3. **Gzipped file** `dumps/...sorted.txt.gz` — streaming scan, a few minutes
+     per run (fine for a one-off).
+
+  For the SQLite route, use `ingest-addresses` (the flat "ever used" list) — not
+  `ingest-balances`, which only holds *currently-funded* addresses and would make
+  an emptied-out wallet read `no`.
 - Exit status: `0` = used (yes), `1` = not used (no), `2` = error — so you can
   script it. With multiple seeds it prints one line each and exits `0`.
 - "Used" means at least one derived address has appeared on-chain. Look the
