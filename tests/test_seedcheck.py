@@ -89,14 +89,23 @@ def test_bisect_file_rejects_gzip(tmp_path):
 
 def test_bisect_file_truncation_guard(tmp_path):
     import pytest
-    # sentinels present, but the file ends at a base58 '3...' address (no bc1
-    # tail) -> looks truncated / missing segwit addresses.
+    # sentinels present, but NO bc1... block at all (base58-only / truncated)
     p = tmp_path / "trunc.txt"
     lines = list(SENTINELS) + ["3FkenCiXpSLqD8L79intRNXUgjRoH9sjXa"]
     p.write_text("\n".join(sorted(lines, key=lambda s: s.encode())) + "\n")
     with pytest.raises(RuntimeError, match="coverage self-check"):
         seedcheck.bisect_file([KNOWN_BIP84_0], p.as_posix())
     assert seedcheck.bisect_file([KNOWN_BIP84_0], p.as_posix(), verify=False) == set()
+
+
+def test_bisect_file_trailing_non_address_lines_ok(tmp_path):
+    # real-world: a bc1 block IS present, but the list has trailing lines that
+    # sort AFTER it (e.g. "s-ff..."). Verify must pass and lookups still work.
+    p = tmp_path / "withjunk.txt"
+    lines = list(SENTINELS) + [KNOWN_BIP84_0, "s-ffsomethingthatisnotanaddress", "zzz-trailer"]
+    p.write_text("\n".join(sorted(lines, key=lambda s: s.encode())) + "\n")
+    found = seedcheck.bisect_file([KNOWN_BIP84_0, "1zNotPresentzzzzzzzzzzzzzzzzzzzzzz"], p.as_posix())
+    assert found == {KNOWN_BIP84_0}
 
 
 def test_check_seed_via_sorted_file(tmp_path):

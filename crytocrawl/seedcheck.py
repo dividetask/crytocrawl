@@ -118,20 +118,26 @@ def _contains_sorted(fh, size: int, addr: bytes) -> bool:
     return False
 
 
-def _last_line(fh, size: int) -> bytes:
-    """Return the last non-empty line of a file without reading the whole thing."""
-    pos = size
-    buf = b""
-    while pos > 0:
-        read = min(65536, pos)
-        pos -= read
-        fh.seek(pos)
-        buf = fh.read(read) + buf
-        stripped = buf.rstrip(b"\r\n")
-        nl = stripped.rfind(b"\n")
-        if nl != -1:
-            return stripped[nl + 1:]
-    return buf.rstrip(b"\r\n")
+def _first_ge(fh, size: int, key: bytes) -> bytes:
+    """Return the first line that is >= key in a bytewise-sorted file (or b'')."""
+    lo, hi = 0, size
+    while lo < hi:
+        mid = (lo + hi) // 2
+        fh.seek(mid)
+        if mid:
+            fh.readline()  # discard the partial line
+        start = fh.tell()
+        line = fh.readline()
+        if not line:
+            hi = mid
+            continue
+        if line.rstrip(b"\r\n") < key:
+            lo = fh.tell()
+        else:
+            hi = start
+    fh.seek(lo)
+    line = fh.readline()
+    return line.rstrip(b"\r\n") if line else b""
 
 
 def bisect_file(targets: Iterable[str], path: str, verify: bool = True) -> set:
@@ -156,17 +162,16 @@ def bisect_file(targets: Iterable[str], path: str, verify: bool = True) -> set:
                     f"via binary search in {path}. The file may be sorted with a non-bytewise "
                     f"collation. Re-sort it with:  LC_ALL=C sort -o {path} {path}\n"
                     "(or pass --no-verify to override if you know the file differs).")
-            # 2) bech32 (bc1...) addresses sort last; if the final entry isn't one,
-            #    the file is truncated or lacks segwit addresses -> false negatives
-            #    for exactly the modern wallets we care about.
-            last = _last_line(fh, size)
-            if not last.startswith(b"bc1"):
+            # 2) confirm the bech32 (bc1...) block is present, so segwit/taproot
+            #    wallets can't read a false 'no'. Binary-search for it rather than
+            #    inspecting the last line, since some lists have trailing non-bc1
+            #    entries that sort after it.
+            if not _first_ge(fh, size, b"bc1").startswith(b"bc1"):
                 raise RuntimeError(
-                    f"coverage self-check failed: the last sorted entry in {path} is "
-                    f"{last.decode(errors='replace')!r}, not a bc1... address. The file is "
-                    "likely truncated (incomplete download) and missing segwit/taproot "
-                    "addresses, which would make modern wallets falsely read 'no'. "
-                    "Re-download/complete the dump, or pass --no-verify to override.")
+                    f"coverage self-check failed: {path} contains no bc1... (segwit/taproot) "
+                    "addresses. The file is likely truncated or a base58-only list, which would "
+                    "make modern wallets falsely read 'no'. Re-download/complete the dump, or pass "
+                    "--no-verify to override if you intend to check only legacy addresses.")
         return {a for a in targets if _contains_sorted(fh, size, a.encode())}
     finally:
         fh.close()
