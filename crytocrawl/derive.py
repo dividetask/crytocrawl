@@ -126,6 +126,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--account", type=int, default=0, help="account index (default: 0)")
     p.add_argument("--change", type=int, default=0, help="0 = receive chain, 1 = change (default: 0)")
     p.add_argument("--no-electrum", action="store_true", help="skip the Electrum algorithms")
+    p.add_argument("--old-wordlist", help="path to Electrum's authoritative old wordlist "
+                   "(old_mnemonic.py or a plain word-per-line file) to override the bundled copy")
     p.add_argument("--pubkeys", action="store_true", help="also print the public key hex")
     p.add_argument("--json", action="store_true", help="machine-readable output")
     args = p.parse_args(argv)
@@ -134,6 +136,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not seed:
         print("No seed provided.", file=sys.stderr)
         return 2
+
+    if args.old_wordlist:
+        words = el.load_wordlist_file(args.old_wordlist)
+        el.set_old_wordlist(words)
+        if len(words) != 1626:
+            print(f"warning: old wordlist has {len(words)} words (expected 1626); "
+                  "decoding may be wrong.", file=sys.stderr)
 
     if args.seed_hex:
         result = derive_from_seed_hex(seed, count=args.count, account=args.account, change=args.change)

@@ -29,6 +29,40 @@ def _normalize(text: str) -> str:
     return " ".join(unicodedata.normalize("NFKD", text).split())
 
 
+# Optional override for the old (pre-2.0) wordlist, so users can supply
+# Electrum's own authoritative list and avoid any transcription risk in the
+# bundled copy. None -> use the bundled crytocrawl.electrum_wordlist.OLD_WORDS.
+_OLD_WORDLIST_OVERRIDE: Optional[List[str]] = None
+
+
+def set_old_wordlist(words: Optional[List[str]]) -> None:
+    """Override (or clear, with None) the old-Electrum wordlist used for decoding."""
+    global _OLD_WORDLIST_OVERRIDE
+    _OLD_WORDLIST_OVERRIDE = list(words) if words else None
+
+
+def _resolve_old_wordlist(wordlist: Optional[List[str]]) -> List[str]:
+    if wordlist is not None:
+        return wordlist
+    if _OLD_WORDLIST_OVERRIDE is not None:
+        return _OLD_WORDLIST_OVERRIDE
+    from .electrum_wordlist import OLD_WORDS
+    return OLD_WORDS
+
+
+def load_wordlist_file(path: str) -> List[str]:
+    """Load an old-Electrum wordlist from a plain (one word per line/space) file
+    or from Electrum's ``old_mnemonic.py`` (extract the quoted words)."""
+    import re
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    if "'" in text or '"' in text:  # Python source: 'like', 'just', ...
+        words = re.findall(r"""['"]([a-z]+)['"]""", text)
+    else:
+        words = text.split()
+    return words
+
+
 # --- standard (Electrum 2.x, BIP32-based) ------------------------------------
 
 def electrum_seed(mnemonic: str, passphrase: str = "") -> bytes:
@@ -83,9 +117,7 @@ def old_seed_to_hex(seed: str, wordlist: Optional[List[str]] = None) -> str:
     seed = seed.strip()
     if _is_hex_seed(seed):
         return seed.lower()
-    if wordlist is None:
-        from .electrum_wordlist import OLD_WORDS
-        wordlist = OLD_WORDS
+    wordlist = _resolve_old_wordlist(wordlist)
     words = _normalize(seed).lower().split()
     if len(words) % 3 != 0:
         raise ValueError("old Electrum seed must be a multiple of 3 words (usually 12)")
@@ -112,10 +144,7 @@ def old_unrecognized_words(seed: str, wordlist: Optional[List[str]] = None) -> L
     """
     if _is_hex_seed(seed.strip()):
         return []
-    if wordlist is None:
-        from .electrum_wordlist import OLD_WORDS
-        wordlist = OLD_WORDS
-    known = set(wordlist)
+    known = set(_resolve_old_wordlist(wordlist))
     return [w for w in _normalize(seed).lower().split() if w not in known]
 
 

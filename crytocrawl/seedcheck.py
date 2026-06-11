@@ -239,9 +239,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--passphrase", default="", help="optional seed passphrase (BIP39/Electrum)")
     p.add_argument("--account", type=int, default=0, help="account index (default: 0)")
     p.add_argument("--no-electrum", action="store_true", help="skip the Electrum algorithms")
+    p.add_argument("--old-wordlist", help="path to Electrum's authoritative old wordlist "
+                   "(old_mnemonic.py or a plain word-per-line file) to override the bundled copy")
     p.add_argument("--verbose", "-v", action="store_true", help="also show which address(es) matched")
     p.add_argument("--json", action="store_true", help="machine-readable output")
     args = p.parse_args(argv)
+
+    if args.old_wordlist:
+        from . import electrum as el
+        words = el.load_wordlist_file(args.old_wordlist)
+        el.set_old_wordlist(words)
+        if len(words) != 1626:
+            print(f"warning: old wordlist has {len(words)} words (expected 1626); "
+                  "decoding may be wrong.", file=sys.stderr)
 
     seeds = [] if args.address else _load_seeds(args)
     if not seeds and not args.address:
