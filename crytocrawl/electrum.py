@@ -104,6 +104,21 @@ def old_seed_to_hex(seed: str, wordlist: Optional[List[str]] = None) -> str:
     return out
 
 
+def old_unrecognized_words(seed: str, wordlist: Optional[List[str]] = None) -> List[str]:
+    """Words in a (would-be old) seed phrase that are not in the old wordlist.
+
+    Empty for a hex seed or a fully-decodable old phrase. A small non-empty list
+    (1-2 words) usually means a real old seed with a typo or a wordlist gap.
+    """
+    if _is_hex_seed(seed.strip()):
+        return []
+    if wordlist is None:
+        from .electrum_wordlist import OLD_WORDS
+        wordlist = OLD_WORDS
+    known = set(wordlist)
+    return [w for w in _normalize(seed).lower().split() if w not in known]
+
+
 def _old_stretch(hex_seed: str) -> int:
     seed = hex_seed.encode("utf-8")  # the ASCII of the hex string, per Electrum
     x = seed

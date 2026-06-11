@@ -74,7 +74,19 @@ def _electrum_sections(mnemonic: str, passphrase: str, count: int, change: int) 
         out["Electrum-Old"] = [_entry(i, label, "P2PKH-uncompressed", addr)
                                for i, (label, addr) in enumerate(old)]
     except ValueError:
-        pass  # input isn't a valid old-format Electrum seed; skip that algorithm
+        # Can't decode to an old-format seed. Stay quiet for ordinary BIP39/
+        # standard phrases, but if it looks like a pre-2.0 seed (multiple of 3
+        # words, only 1-2 unrecognized) surface it so the scheme isn't silently
+        # dropped -- better to flag than to skip.
+        if change == 0:
+            words = mnemonic.split()
+            if len(words) >= 12 and len(words) % 3 == 0:
+                unknown = el.old_unrecognized_words(mnemonic)
+                if 1 <= len(unknown) <= 2:
+                    print(f"note: Electrum-Old not derived -- word(s) not in the old "
+                          f"wordlist: {', '.join(unknown)}. If this is a pre-2.0 Electrum "
+                          f"seed, fix the spelling or pass the 32-char hex seed so its "
+                          f"addresses get checked.", file=sys.stderr)
     return out
 
 
