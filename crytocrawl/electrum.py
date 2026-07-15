@@ -148,6 +148,18 @@ def old_unrecognized_words(seed: str, wordlist: Optional[List[str]] = None) -> L
     return [w for w in _normalize(seed).lower().split() if w not in known]
 
 
+def suggest_old_words(seed: str, n: int = 5, wordlist: Optional[List[str]] = None) -> dict:
+    """For each unrecognized word, the closest real old-wordlist words.
+
+    Helps spot transcription errors in a written-down old seed (e.g. a misread
+    letter or a UK/US spelling) without revealing the whole phrase.
+    """
+    import difflib
+    words = _resolve_old_wordlist(wordlist)
+    return {w: difflib.get_close_matches(w, words, n=n, cutoff=0.5)
+            for w in old_unrecognized_words(seed, wordlist)}
+
+
 def _old_stretch(hex_seed: str) -> int:
     seed = hex_seed.encode("utf-8")  # the ASCII of the hex string, per Electrum
     x = seed

@@ -103,6 +103,19 @@ def test_electrum_old_rejects_non_old_seed():
         el.old_seed_to_hex("abandon abandon abandon about")  # not in old wordlist
 
 
+def test_old_unrecognized_and_suggestions():
+    assert el.old_unrecognized_words(ELECTRUM_OLD_WORDS) == []
+    unk = el.old_unrecognized_words("colour favourite chzir ksis lovee")
+    assert set(unk) == {"colour", "favourite", "chzir", "ksis", "lovee"}
+    sug = el.suggest_old_words("colour favourite chzir ksis lovee")
+    # the correct wordlist entry is the top suggestion for each misspelling
+    assert sug["colour"][0] == "color"
+    assert sug["favourite"][0] == "favorite"
+    assert sug["chzir"][0] == "chair"
+    assert sug["ksis"][0] == "kiss"
+    assert sug["lovee"][0] == "love"
+
+
 def test_derive_includes_electrum_sections():
     r = derive.derive_from_mnemonic(ELECTRUM_LEGACY, count=2)
     assert "Electrum-Legacy" in r and "Electrum-Segwit" in r
