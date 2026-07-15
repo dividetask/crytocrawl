@@ -50,6 +50,21 @@ def _resolve_old_wordlist(wordlist: Optional[List[str]]) -> List[str]:
     return OLD_WORDS
 
 
+def electrum_seed_type(seed: str) -> Optional[str]:
+    """Electrum 2.x seed type by its version prefix, or None if not an Electrum
+    seed. Electrum validates seeds by HMAC-SHA512(b'Seed version', seed) rather
+    than a checksum, so this is exact for standard/segwit/2fa seeds."""
+    import hashlib
+    import hmac
+    s = _normalize(seed).lower().encode("utf-8")
+    h = hmac.new(b"Seed version", s, hashlib.sha512).hexdigest()
+    for prefix, name in (("01", "standard"), ("100", "segwit"),
+                         ("101", "2fa"), ("102", "2fa-segwit")):
+        if h.startswith(prefix):
+            return name
+    return None
+
+
 def load_wordlist_file(path: str) -> List[str]:
     """Load an old-Electrum wordlist from a plain (one word per line/space) file
     or from Electrum's ``old_mnemonic.py`` (extract the quoted words)."""

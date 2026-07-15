@@ -140,3 +140,19 @@ def test_cli_human_and_json(capsys):
     import json
     out = json.loads(capsys.readouterr().out)
     assert out["BIP84"][0]["address"] == "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu"
+
+
+def test_seed_identification():
+    from crytocrawl import bip39, seedid
+    from crytocrawl import electrum as el
+    valid_bip39 = "legal winner thank year wave sausage worth useful legal winner thank yellow"
+    assert bip39.bip39_checksum_valid(valid_bip39)
+    tampered = "legal winner thank year wave sausage worth useful legal winner thank zoo"
+    assert not bip39.bip39_checksum_valid(tampered)
+    assert el.electrum_seed_type(ELECTRUM_LEGACY) == "standard"
+    assert el.electrum_seed_type(ELECTRUM_SEGWIT) == "segwit"
+    assert el.electrum_seed_type(valid_bip39) is None
+    # verdict language
+    assert "valid BIP39" in seedid.describe_seed(valid_bip39)
+    assert "CHECKSUM IS INVALID" in seedid.describe_seed(tampered)  # all bip39 words, bad checksum
+    assert "Electrum" in seedid.describe_seed(ELECTRUM_LEGACY)

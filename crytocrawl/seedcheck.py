@@ -241,6 +241,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--no-electrum", action="store_true", help="skip the Electrum algorithms")
     p.add_argument("--old-wordlist", help="path to Electrum's authoritative old wordlist "
                    "(old_mnemonic.py or a plain word-per-line file) to override the bundled copy")
+    p.add_argument("--identify", action="store_true",
+                   help="report what kind of seed this is (BIP39 / Electrum / old) and exit")
     p.add_argument("--verbose", "-v", action="store_true", help="also show which address(es) matched")
     p.add_argument("--json", action="store_true", help="machine-readable output")
     args = p.parse_args(argv)
@@ -257,6 +259,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not seeds and not args.address:
         print("No seed provided.", file=sys.stderr)
         return 2
+
+    if args.identify:
+        from . import seedid
+        for i, s in enumerate(seeds):
+            if i:
+                print()
+            print(seedid.describe_seed(s))
+        return 0
 
     # Resolve the lookup source. Explicit flags win; otherwise auto-detect, in
     # order of speed: SQLite DB -> decompressed sorted file (binary search) ->
@@ -328,9 +338,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     elif len(seeds) == 1:
         s = seeds[0]
         print("yes" if used_seeds[s] else "no")
-        if args.verbose and used_seeds[s]:
-            for m in used_seeds[s]:
-                print(f"  {m['address']}  ({m['algorithm']} {m['path']})", file=sys.stderr)
+        if used_seeds[s]:
+            if args.verbose:
+                for m in used_seeds[s]:
+                    print(f"  {m['address']}  ({m['algorithm']} {m['path']})", file=sys.stderr)
+        else:
+            # A 'no' on a seed you believe was used often means the phrase itself
+            # is mistyped. Surface the seed-type verdict to point that out.
+            from . import seedid
+            print("\n" + seedid.describe_seed(s), file=sys.stderr)
     else:
         for s in seeds:
             print(f"{'yes' if used_seeds[s] else 'no':<3}  {s}")
